@@ -4,11 +4,47 @@ import { WebSocketServer, WebSocket } from "ws";
 import session from "express-session";
 import ConnectPgSimple from "connect-pg-simple";
 import bcrypt from "bcrypt";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
 
 import { storage } from "./storage";
 import { createJobSchema, loginSchema, insertUserSchema, insertColorSchema, insertColorGroupSchema } from "@shared/schema";
 import { pool } from "./db";
 import "./types";
+
+// File upload configuration
+const uploadDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storageConfig = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    // Generate unique filename with timestamp
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, `texture-${uniqueSuffix}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage: storageConfig,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Only allow images
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  }
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Session configuration
@@ -30,6 +66,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     },
     name: 'cnc-session' // Explicit session name
   }));
+
+  // Serve uploaded files
+  app.use('/uploads', (req, res, next) => {
+    // Set cache headers for images
+    res.set('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    next();
+  }, (req, res, next) => {
+    // Simple static file serving
+    const filePath = path.join(uploadDir, req.path || '');
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      res.sendFile(filePath);
+    } else {
+      next();
+    }
+  });
 
   // Authentication middleware
   const requireAuth = (req: any, res: any, next: any) => {
@@ -53,6 +104,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
     next();
   };
 
+  // File upload route for texture images
+  app.post("/api/upload-texture", requireAdmin, upload.single('texture'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: "No file uploaded" });
+      }
+
+      // Generate the URL for the uploaded file
+      const fileUrl = `/uploads/${req.file.filename}`;
+      
+      res.json({ 
+        success: true, 
+        fileUrl,
+        filename: req.file.filename,
+        originalName: req.file.originalname
+      });
+    } catch (error) {
+      console.error('Upload error:', error);
+      res.status(500).json({ message: "Upload failed" });
+    }
+  });
+
+  // Delete uploaded file
+  app.delete("/api/upload-texture/:filename", requireAdmin, async (req, res) => {
+    try {
+      const filename = req.params.filename;
+      if (!filename) {
+        return res.status(400).json({ message: "Filename is required" });
+      }
+      const filePath = path.join(uploadDir, filename);
+      
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        res.json({ success: true, message: "File deleted" });
+      } else {
+        res.status(404).json({ message: "File not found" });
+      }
+    } catch (error) {
+      console.error('Delete file error:', error);
+      res.status(500).json({ message: "Failed to delete file" });
+    }
+  });
+
   // Auth routes
   app.post("/api/login", async (req, res) => {
     try {
@@ -60,7 +154,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { username, password } = loginSchema.parse(req.body);
       
       // Make username lookup case-insensitive
-      const user = await storage.getUserByUsername(username.toLowerCase());
+      const user = await storage.getUserByUsername(username.toLowerCase() || '');
       console.log('User found:', user ? 'yes' : 'no');
       
       if (!user || !await bcrypt.compare(password, user.password)) {
@@ -578,7 +672,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Check if username already exists (case-insensitive)
-      const existingUser = await storage.getUserByUsername(username!);
+      const existingUser = await storage.getUserByUsername(username);
       if (existingUser) {
         return res.status(400).json({ message: "Username already exists" });
       }
@@ -644,7 +738,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const id = parseInt(req.params.id);
       
       // Prevent deleting yourself
-      if (id === req.session.user!.id) {
+      if (id === req.session.user?.id) {
         return res.status(400).json({ message: "Cannot delete your own account" });
       }
       

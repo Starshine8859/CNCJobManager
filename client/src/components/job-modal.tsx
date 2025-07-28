@@ -178,10 +178,19 @@ export default function JobModal({ open, onOpenChange }: JobModalProps) {
                                   {groupColors.map((color) => (
                                     <SelectItem key={color.id} value={color.id.toString()}>
                                       <div className="flex items-center space-x-2">
-                                        <div 
-                                          className="w-4 h-4 rounded border"
-                                          style={{ backgroundColor: color.hexColor }}
-                                        />
+                                        {/* Show texture image if available, otherwise fallback to color */}
+                                        {color.texture ? (
+                                          <img
+                                            src={color.texture}
+                                            alt={color.name}
+                                            className="w-6 h-6 rounded border object-cover"
+                                          />
+                                        ) : (
+                                          <div 
+                                            className="w-6 h-6 rounded border"
+                                            style={{ backgroundColor: color.hexColor }}
+                                          />
+                                        )}
                                         <span>{color.name}</span>
                                       </div>
                                     </SelectItem>

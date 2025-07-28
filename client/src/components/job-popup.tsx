@@ -202,10 +202,19 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
               <div key={material.id} className="space-y-2">
                 <div className="flex items-center justify-between bg-gray-50 p-2 rounded">
                   <div className="flex items-center space-x-2">
-                    <div
-                      className="w-5 h-5 rounded border-2 border-gray-300"
-                      style={{ backgroundColor: material.color?.hexColor || '#ccc' }}
-                    />
+                    {/* Show texture image if available, otherwise fallback to color */}
+                    {material.color?.texture ? (
+                      <img
+                        src={material.color.texture}
+                        alt={material.color?.name}
+                        className="w-5 h-5 rounded border-2 border-gray-300 object-cover"
+                      />
+                    ) : (
+                      <div
+                        className="w-5 h-5 rounded border-2 border-gray-300"
+                        style={{ backgroundColor: material.color?.hexColor || '#ccc' }}
+                      />
+                    )}
                     <h4 className="text-sm font-semibold text-gray-800">{material.color?.name}</h4>
                   </div>
                   <span className="text-sm font-bold text-blue-600 bg-blue-100 px-2 py-1 rounded">

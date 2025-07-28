@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useWebSocket } from "@/hooks/use-websocket";
+import { TextureSwatch } from "@/components/ui/texture-swatch";
 import type { JobWithMaterials, ColorWithGroup } from "@shared/schema";
 
 interface JobDetailsModalProps {
@@ -824,9 +825,11 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                           <div key={material.id} className="border-l-4 border-l-blue-500 pl-4">
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center space-x-4">
-                                <div
-                                  className="w-6 h-6 rounded border"
-                                  style={{ backgroundColor: material.color.hexColor }}
+                                <TextureSwatch 
+                                  texture={material.color.texture} 
+                                  hexColor={material.color.hexColor}
+                                  name={material.color.name}
+                                  size="lg"
                                 />
                                 <div>
                                   <div className="font-medium">{material.color.name}</div>
@@ -1087,9 +1090,11 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                       {groupColors.map((color) => (
                         <SelectItem key={color.id} value={color.id.toString()}>
                           <div className="flex items-center space-x-2">
-                            <div 
-                              className="w-4 h-4 rounded border"
-                              style={{ backgroundColor: color.hexColor }}
+                            <TextureSwatch 
+                              texture={color.texture} 
+                              hexColor={color.hexColor}
+                              name={color.name}
+                              size="md"
                             />
                             <span>{color.name}</span>
                           </div>

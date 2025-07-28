@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Plus, Edit, Trash2, Users, Palette } from "lucide-react";
+import { Plus, Edit, Trash2, Users, Palette, Upload, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,8 @@ export default function Admin() {
   const [showUserDialog, setShowUserDialog] = useState(false);
   const [showColorDialog, setShowColorDialog] = useState(false);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
+  const [uploadedTextureUrl, setUploadedTextureUrl] = useState<string>("");
+  const [isUploading, setIsUploading] = useState(false);
   
   const { user } = useAuth();
   const { toast } = useToast();
@@ -61,6 +63,50 @@ export default function Admin() {
     queryKey: ['/api/color-groups'],
   });
 
+  // File upload mutation
+  const uploadTextureMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append('texture', file);
+      
+      const response = await fetch('/api/upload-texture', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        throw new Error('Upload failed');
+      }
+      
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setUploadedTextureUrl(data.fileUrl);
+      colorForm.setValue('texture', data.fileUrl);
+      setIsUploading(false);
+      toast({ title: "Success", description: "Texture uploaded successfully" });
+    },
+    onError: () => {
+      setIsUploading(false);
+      toast({ title: "Error", description: "Failed to upload texture", variant: "destructive" });
+    },
+  });
+
+  // Handle file upload
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setIsUploading(true);
+      uploadTextureMutation.mutate(file);
+    }
+  };
+
+  // Clear uploaded texture
+  const clearTexture = () => {
+    setUploadedTextureUrl("");
+    colorForm.setValue('texture', "");
+  };
+
   // Mutations
   const createUserMutation = useMutation({
     mutationFn: (data: any) => apiRequest('POST', '/api/users', data),
@@ -92,6 +138,7 @@ export default function Admin() {
       queryClient.invalidateQueries({ queryKey: ['/api/colors'] });
       setShowColorDialog(false);
       colorForm.reset();
+      setUploadedTextureUrl("");
       toast({ title: "Success", description: "Color created successfully" });
     },
     onError: (error: any) => {
@@ -234,7 +281,7 @@ export default function Admin() {
                         Add Color
                       </Button>
                     </DialogTrigger>
-                    <DialogContent>
+                    <DialogContent className="max-w-md">
                       <DialogHeader>
                         <DialogTitle>Create Color</DialogTitle>
                       </DialogHeader>
@@ -247,18 +294,75 @@ export default function Admin() {
                               <FormItem>
                                 <FormLabel>Color Name</FormLabel>
                                 <FormControl>
-                                  <Input placeholder="e.g., Walnut, White Melamine" {...field} />
+                                  <Input placeholder="e.g., Biscuit, Walnut, White Melamine" {...field} />
                                 </FormControl>
                                 <FormMessage />
                               </FormItem>
                             )}
                           />
+                          
+                          {/* Texture Upload Section */}
+                          <FormField
+                            control={colorForm.control}
+                            name="texture"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Material Texture Image</FormLabel>
+                                <FormControl>
+                                  <div className="space-y-3">
+                                    {/* Upload Area */}
+                                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={handleFileUpload}
+                                        className="hidden"
+                                        id="texture-upload"
+                                        disabled={isUploading}
+                                      />
+                                      <label htmlFor="texture-upload" className="cursor-pointer">
+                                        <Upload className="h-8 w-8 mx-auto text-gray-400 mb-2" />
+                                        <p className="text-sm text-gray-600">
+                                          {isUploading ? "Uploading..." : "Click to upload texture image"}
+                                        </p>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          PNG, JPG up to 5MB
+                                        </p>
+                                      </label>
+                                    </div>
+                                    
+                                    {/* Preview */}
+                                    {(uploadedTextureUrl || field.value) && (
+                                      <div className="relative">
+                                        <img
+                                          src={uploadedTextureUrl || field.value}
+                                          alt="Texture preview"
+                                          className="w-full h-32 object-cover rounded-lg border"
+                                        />
+                                        <Button
+                                          type="button"
+                                          variant="destructive"
+                                          size="sm"
+                                          onClick={clearTexture}
+                                          className="absolute top-2 right-2"
+                                        >
+                                          <X className="h-4 w-4" />
+                                        </Button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          
                           <FormField
                             control={colorForm.control}
                             name="hexColor"
                             render={({ field }) => (
                               <FormItem>
-                                <FormLabel>Hex Color</FormLabel>
+                                <FormLabel>Fallback Color (if no image)</FormLabel>
                                 <FormControl>
                                   <div className="flex space-x-2">
                                     <Input type="color" className="w-20" {...field} />
@@ -275,7 +379,7 @@ export default function Admin() {
                             render={({ field }) => (
                               <FormItem>
                                 <FormLabel>Color Group</FormLabel>
-                                <Select onValueChange={(value) => field.onChange(parseInt(value))} value={field.value ? field.value.toString() : ""}>
+                                <Select onValueChange={(value) => field.onChange(parseInt(value))} value={field.value ? String(field.value) : ""}>
                                   <FormControl>
                                     <SelectTrigger>
                                       <SelectValue placeholder="Select a group" />
@@ -313,10 +417,19 @@ export default function Admin() {
                     <div key={color.id} className="p-4 border rounded-lg">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
-                          <div 
-                            className="w-8 h-8 rounded border"
-                            style={{ backgroundColor: color.hexColor }}
-                          />
+                          {/* Show texture image if available, otherwise fallback to color */}
+                          {color.texture ? (
+                            <img
+                              src={color.texture}
+                              alt={color.name}
+                              className="w-12 h-12 rounded border object-cover"
+                            />
+                          ) : (
+                            <div 
+                              className="w-12 h-12 rounded border"
+                              style={{ backgroundColor: color.hexColor }}
+                            />
+                          )}
                           <div>
                             <h4 className="font-medium">{color.name}</h4>
                             {color.group && (
