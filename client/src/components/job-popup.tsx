@@ -37,10 +37,11 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
     }
   }, [job, queryClient]);
 
-  // Simple tracking of pending button clicks to prevent double-clicking
-  const [pendingClicks, setPendingClicks] = useState<Set<string>>(new Set());
+  // Optimistic state for immediate UI updates
+  const [optimisticSheetStatuses, setOptimisticSheetStatuses] = useState<Record<string, Record<number, string>>>({});
+  const [optimisticRecutStatuses, setOptimisticRecutStatuses] = useState<Record<string, Record<number, string>>>({});
 
-  // Update sheet status mutation with stable optimistic updates
+  // Update sheet status mutation with optimistic updates
   const updateSheetMutation = useMutation({
     mutationFn: ({ materialId, sheetIndex, status }: { 
       materialId: number; 
@@ -48,31 +49,39 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
       status: 'cut' | 'skip' | 'pending';
     }) => {
       console.log('Making API call:', { materialId, sheetIndex, status });
-      
-      const clickKey = `material-${materialId}-${sheetIndex}`;
-      setPendingClicks(prev => new Set(prev).add(clickKey));
-      
       return apiRequest('PUT', `/api/materials/${materialId}/sheet-status`, { sheetIndex, status });
     },
-    onSuccess: (_, variables) => {
-      const clickKey = `material-${variables.materialId}-${variables.sheetIndex}`;
-      setPendingClicks(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(clickKey);
-        return newSet;
-      });
+    onMutate: ({ materialId, sheetIndex, status }) => {
+      // Immediately update the UI optimistically
+      setOptimisticSheetStatuses(prev => ({
+        ...prev,
+        [materialId]: {
+          ...prev[materialId],
+          [sheetIndex]: status
+        }
+      }));
       
-      // Force immediate refresh
+      // Return context for rollback if needed
+      return { materialId, sheetIndex, previousStatus: optimisticSheetStatuses[materialId]?.[sheetIndex] };
+    },
+    onSuccess: (_, variables) => {
+      // Force immediate refresh to sync with server
       queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
     },
-    onError: (error: any, variables) => {
+    onError: (error: any, variables, context) => {
       console.error('API error:', error);
-      const clickKey = `material-${variables.materialId}-${variables.sheetIndex}`;
-      setPendingClicks(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(clickKey);
-        return newSet;
-      });
+      
+      // Rollback optimistic update on error
+      if (context) {
+        setOptimisticSheetStatuses(prev => ({
+          ...prev,
+          [context.materialId]: {
+            ...prev[context.materialId],
+            [context.sheetIndex]: context.previousStatus || 'pending'
+          }
+        }));
+      }
+      
       toast({
         title: "Error",
         description: error.message || "Failed to update sheet status",
@@ -82,20 +91,17 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
   });
 
   const handleSheetClick = (materialId: number, sheetIndex: number, currentStatus: string) => {
-    const clickKey = `material-${materialId}-${sheetIndex}`;
-    
-    // Prevent rapid clicking on same button
-    if (pendingClicks.has(clickKey)) {
-      return;
-    }
-    
     console.log('handleSheetClick called:', { materialId, sheetIndex, currentStatus });
+    
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticSheetStatuses[materialId]?.[sheetIndex];
+    const actualStatus = optimisticStatus !== undefined ? optimisticStatus : currentStatus;
     
     // Cycle through states: pending -> cut -> skip -> pending
     let newStatus: 'cut' | 'skip' | 'pending';
-    if (currentStatus === 'pending') {
+    if (actualStatus === 'pending') {
       newStatus = 'cut';
-    } else if (currentStatus === 'cut') {
+    } else if (actualStatus === 'cut') {
       newStatus = 'skip';
     } else {
       newStatus = 'pending';
@@ -225,10 +231,12 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
                 {/* Sheet grid - fixed layout to prevent jumping */}
                 <div className="grid grid-cols-6 gap-2 p-2 bg-white rounded border min-h-[64px]">
                   {Array.from({ length: material.totalSheets }).map((_, index) => {
-                    // Use real status from server data
-                    const status = material.sheetStatuses?.[index] || 'pending';
-                    const clickKey = `material-${material.id}-${index}`;
-                    const isButtonPending = pendingClicks.has(clickKey);
+                    // Use optimistic status if available, otherwise fall back to server status
+                    const optimisticStatus = optimisticSheetStatuses[material.id]?.[index];
+                    const serverStatus = material.sheetStatuses?.[index] || 'pending';
+                    const status = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+                    const isPending = updateSheetMutation.isPending;
+                    
                     return (
                       <div key={`${material.id}-${index}`} className="flex flex-col">
                         <button
@@ -238,14 +246,14 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
                             console.log('Popup click:', material.id, index, status);
                             handleSheetClick(material.id, index, status);
                           }}
-                          className={`w-10 h-10 text-sm font-bold rounded border-2 flex items-center justify-center ${
+                          className={`w-10 h-10 text-sm font-bold rounded border-2 flex items-center justify-center transition-all duration-150 ${
                             status === 'cut' 
                               ? 'bg-green-500 text-white border-green-600' 
                               : status === 'skip'
                               ? 'bg-red-400 text-white border-red-500'
                               : 'bg-white border-gray-400 hover:border-blue-500 hover:bg-blue-50'
-                          } ${isButtonPending ? 'opacity-50' : ''}`}
-                          disabled={isButtonPending}
+                          } ${isPending ? 'opacity-75' : ''}`}
+                          disabled={isPending}
                           type="button"
                           style={{ 
                             touchAction: 'manipulation',
@@ -289,7 +297,7 @@ function RecutsList({
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [pendingRecutClicks, setPendingRecutClicks] = useState<Set<string>>(new Set());
+  const [optimisticRecutStatuses, setOptimisticRecutStatuses] = useState<Record<string, Record<number, string>>>({});
   
   const { data: recuts } = useQuery<RecutEntry[]>({
     queryKey: [`/api/materials/${materialId}/recuts`],
@@ -304,32 +312,40 @@ function RecutsList({
       status: 'cut' | 'skip' | 'pending';
     }) => {
       console.log('Making recut API call:', { recutId, sheetIndex, status });
-      
-      const clickKey = `recut-${recutId}-${sheetIndex}`;
-      setPendingRecutClicks(prev => new Set(prev).add(clickKey));
-      
       return apiRequest('PUT', `/api/recuts/${recutId}/sheet-status`, { sheetIndex, status });
     },
-    onSuccess: (_, variables) => {
-      const clickKey = `recut-${variables.recutId}-${variables.sheetIndex}`;
-      setPendingRecutClicks(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(clickKey);
-        return newSet;
-      });
+    onMutate: ({ recutId, sheetIndex, status }) => {
+      // Immediately update the UI optimistically
+      setOptimisticRecutStatuses(prev => ({
+        ...prev,
+        [recutId]: {
+          ...prev[recutId],
+          [sheetIndex]: status
+        }
+      }));
       
+      // Return context for rollback if needed
+      return { recutId, sheetIndex, previousStatus: optimisticRecutStatuses[recutId]?.[sheetIndex] };
+    },
+    onSuccess: (_, variables) => {
       // Force immediate refresh of both recut data and job data  
       queryClient.invalidateQueries({ queryKey: [`/api/materials/${materialId}/recuts`] });
       onRecutUpdate();
     },
-    onError: (error: any, variables) => {
+    onError: (error: any, variables, context) => {
       console.error('Recut API error:', error);
-      const clickKey = `recut-${variables.recutId}-${variables.sheetIndex}`;
-      setPendingRecutClicks(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(clickKey);
-        return newSet;
-      });
+      
+      // Rollback optimistic update on error
+      if (context) {
+        setOptimisticRecutStatuses(prev => ({
+          ...prev,
+          [context.recutId]: {
+            ...prev[context.recutId],
+            [context.sheetIndex]: context.previousStatus || 'pending'
+          }
+        }));
+      }
+      
       toast({
         title: "Error", 
         description: error.message || "Failed to update recut sheet status",
@@ -339,27 +355,21 @@ function RecutsList({
   });
 
   const handleRecutSheetClick = (recutId: number, sheetIndex: number, currentStatus: string) => {
-    const clickKey = `recut-${recutId}-${sheetIndex}`;
-    
     console.log('handleRecutSheetClick called:', { 
       recutId, 
       sheetIndex, 
-      currentStatus, 
-      clickKey, 
-      pendingClicks: Array.from(pendingRecutClicks),
-      hasPending: pendingRecutClicks.has(clickKey) 
+      currentStatus
     });
     
-    if (pendingRecutClicks.has(clickKey)) {
-      console.log('Button is pending, skipping click');
-      return;
-    }
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticRecutStatuses[recutId]?.[sheetIndex];
+    const actualStatus = optimisticStatus !== undefined ? optimisticStatus : currentStatus;
     
     // Cycle through states: pending -> cut -> skip -> pending
     let newStatus: 'cut' | 'skip' | 'pending';
-    if (currentStatus === 'pending') {
+    if (actualStatus === 'pending') {
       newStatus = 'cut';
-    } else if (currentStatus === 'cut') {
+    } else if (actualStatus === 'cut') {
       newStatus = 'skip';
     } else {
       newStatus = 'pending';
@@ -390,28 +400,29 @@ function RecutsList({
           
           <div className="grid grid-cols-6 gap-2 p-2 bg-orange-100 rounded min-h-[64px]">
             {Array.from({ length: recut.quantity }).map((_, sheetIndex) => {
-              const status = recut.sheetStatuses?.[sheetIndex] || 'pending';
-              const clickKey = `recut-${recut.id}-${sheetIndex}`;
-              const isButtonPending = pendingRecutClicks.has(clickKey);
+              // Use optimistic status if available, otherwise fall back to server status
+              const optimisticStatus = optimisticRecutStatuses[recut.id]?.[sheetIndex];
+              const serverStatus = recut.sheetStatuses?.[sheetIndex] || 'pending';
+              const status = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+              const isPending = updateRecutSheetMutation.isPending;
+              
               return (
                 <div key={`${recut.id}-${sheetIndex}`} className="flex flex-col">
                   <button
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      console.log('Recut click detected:', recut.id, sheetIndex, status, 'pending:', isButtonPending);
-                      if (!isButtonPending) {
-                        handleRecutSheetClick(recut.id, sheetIndex, status);
-                      }
+                      console.log('Recut click detected:', recut.id, sheetIndex, status);
+                      handleRecutSheetClick(recut.id, sheetIndex, status);
                     }}
-                    className={`w-10 h-10 text-sm font-bold rounded border-2 flex items-center justify-center ${
+                    className={`w-10 h-10 text-sm font-bold rounded border-2 flex items-center justify-center transition-all duration-150 ${
                       status === 'cut'
                         ? 'bg-green-500 text-white border-green-600'
                         : status === 'skip' 
                         ? 'bg-red-400 text-white border-red-500'
                         : 'bg-orange-200 border-orange-400 hover:border-orange-500 hover:bg-orange-300'
-                    } ${isButtonPending ? 'opacity-50' : ''}`}
-                    disabled={isButtonPending}
+                    } ${isPending ? 'opacity-75' : ''}`}
+                    disabled={isPending}
                     type="button"
                     style={{ 
                       touchAction: 'manipulation',

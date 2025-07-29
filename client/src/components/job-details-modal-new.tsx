@@ -217,6 +217,9 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
   const [liveTimerSeconds, setLiveTimerSeconds] = useState<number>(0);
   const [timerStartTime, setTimerStartTime] = useState<Date | null>(null);
   
+  // Optimistic state for immediate UI updates
+  const [optimisticSheetStatuses, setOptimisticSheetStatuses] = useState<Record<string, Record<number, string>>>({});
+  
   // WebSocket for real-time updates
   const handleWebSocketMessage = (message: MessageEvent) => {
     if (!open || !job) return;
@@ -363,11 +366,35 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
   const updateSheetStatusMutation = useMutation({
     mutationFn: ({ materialId, sheetIndex, status }: { materialId: number; sheetIndex: number; status: string }) =>
       apiRequest('PUT', `/api/materials/${materialId}/sheet-status`, { sheetIndex, status }),
+    onMutate: ({ materialId, sheetIndex, status }) => {
+      // Immediately update the UI optimistically
+      setOptimisticSheetStatuses(prev => ({
+        ...prev,
+        [materialId]: {
+          ...prev[materialId],
+          [sheetIndex]: status
+        }
+      }));
+      
+      // Return context for rollback if needed
+      return { materialId, sheetIndex, previousStatus: optimisticSheetStatuses[materialId]?.[sheetIndex] };
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/jobs'] });
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
     },
-    onError: () => {
+    onError: (error, variables, context) => {
+      // Rollback optimistic update on error
+      if (context) {
+        setOptimisticSheetStatuses(prev => ({
+          ...prev,
+          [context.materialId]: {
+            ...prev[context.materialId],
+            [context.sheetIndex]: context.previousStatus || 'pending'
+          }
+        }));
+      }
+      
       toast({ title: "Error", description: "Failed to update sheet status" });
     }
   });
@@ -544,7 +571,7 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
     return baseDuration + liveTimerSeconds;
   };
 
-  // Handle sheet cut - copied from working popup
+  // Handle sheet cut - with optimistic updates
   const handleSheetCut = (materialId: number, sheetIndex: number) => {
     // Find material across all cutlists
     let material = null;
@@ -556,13 +583,17 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
     }
     if (!material) return;
     
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticSheetStatuses[materialId]?.[sheetIndex];
     const serverStatuses = material.sheetStatuses || [];
-    const currentStatus = serverStatuses[sheetIndex] || 'pending';
+    const serverStatus = serverStatuses[sheetIndex] || 'pending';
+    const currentStatus = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+    
     const newStatus = currentStatus === 'cut' ? 'pending' : 'cut';
     updateSheetStatusMutation.mutate({ materialId, sheetIndex, status: newStatus });
   };
 
-  // Handle sheet skip - copied from working popup
+  // Handle sheet skip - with optimistic updates
   const handleSheetSkip = (materialId: number, sheetIndex: number) => {
     // Find material across all cutlists
     let material = null;
@@ -574,8 +605,12 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
     }
     if (!material) return;
     
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticSheetStatuses[materialId]?.[sheetIndex];
     const serverStatuses = material.sheetStatuses || [];
-    const currentStatus = serverStatuses[sheetIndex] || 'pending';
+    const serverStatus = serverStatuses[sheetIndex] || 'pending';
+    const currentStatus = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+    
     const newStatus = currentStatus === 'skip' ? 'pending' : 'skip';
     updateSheetStatusMutation.mutate({ materialId, sheetIndex, status: newStatus });
   };
@@ -707,9 +742,9 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                 <div className="space-y-2">
                   {/* Original Sheets Progress */}
                   <div>
-                    <div className="flex justify-between text-xs text-gray-600 mb-1">
-                      <span>Original Sheets</span>
-                      <span>{completedSheets}/{effectiveTotalSheets}</span>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs text-gray-600 font-medium">Original Sheets</span>
+                      <span className="text-xs text-gray-700 font-semibold bg-gray-100 px-2 py-0.5 rounded">{completedSheets}/{effectiveTotalSheets}</span>
                     </div>
                     <Progress value={progress} className="h-2" />
                   </div>
@@ -740,9 +775,9 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                     if (recutTotal > 0) {
                       return (
                         <div>
-                          <div className="flex justify-between text-xs text-orange-600 mb-1">
-                            <span>Recut Sheets</span>
-                            <span>{recutCompleted}/{recutEffectiveTotal}</span>
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs text-orange-600 font-medium">Recut Sheets</span>
+                            <span className="text-xs text-orange-700 font-semibold bg-orange-100 px-2 py-0.5 rounded">{recutCompleted}/{recutEffectiveTotal}</span>
                           </div>
                           <div className="relative h-2 bg-orange-100 rounded-full overflow-hidden">
                             <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${recutProgress}%` }}></div>
@@ -833,14 +868,14 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                                 />
                                 <div>
                                   <div className="font-medium">{material.color.name}</div>
-                                  <div className="space-y-1">
+                                  <div className="space-y-2">
                                     {/* Original Sheets Progress */}
                                     <div>
-                                      <div className="flex justify-between text-xs text-gray-600">
-                                        <span>Original: {completedCount}/{effectiveTotal}</span>
-                                        <span>{progressPercentage}%</span>
+                                      <div className="flex justify-between items-center mb-1">
+                                        <span className="text-xs text-gray-600 font-medium">Original: {completedCount}/{effectiveTotal}</span>
+                                        <span className="text-xs text-gray-700 font-semibold bg-gray-100 px-2 py-0.5 rounded">{progressPercentage}%</span>
                                       </div>
-                                      <Progress value={progressPercentage} className="h-1" />
+                                      <Progress value={progressPercentage} className="h-2" />
                                     </div>
                                     
                                     {/* Recut Sheets Progress */}
@@ -865,11 +900,11 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                                       if (recutTotal > 0) {
                                         return (
                                           <div>
-                                            <div className="flex justify-between text-xs text-orange-600">
-                                              <span>Recut: {recutCompleted}/{recutEffectiveTotal}</span>
-                                              <span>{recutProgress}%</span>
+                                            <div className="flex justify-between items-center mb-1">
+                                              <span className="text-xs text-orange-600 font-medium">Recut: {recutCompleted}/{recutEffectiveTotal}</span>
+                                              <span className="text-xs text-orange-700 font-semibold bg-orange-100 px-2 py-0.5 rounded">{recutProgress}%</span>
                                             </div>
-                                            <div className="relative h-1 bg-orange-100 rounded-full overflow-hidden">
+                                            <div className="relative h-2 bg-orange-100 rounded-full overflow-hidden">
                                               <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${recutProgress}%` }}></div>
                                             </div>
                                           </div>
@@ -904,7 +939,11 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                             {/* Sheet Grid */}
                             <div className="grid grid-cols-6 gap-2 mt-3" key={`material-${material.id}-sheets-${material.totalSheets}-${updateCounter}`}>
                               {Array.from({ length: material.totalSheets }, (_, i) => {
-                                const status = sheetStatuses[i] || 'pending';
+                                // Use optimistic status if available, otherwise fall back to server status
+                                const optimisticStatus = optimisticSheetStatuses[material.id]?.[i];
+                                const serverStatus = sheetStatuses[i] || 'pending';
+                                const status = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+                                const isPending = updateSheetStatusMutation.isPending;
                                 
                                 return (
                                   <div key={`sheet-${material.id}-${i}-${updateCounter}`} className="flex flex-col items-center gap-1">
@@ -915,22 +954,23 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                                     <div className="flex gap-1 items-center">
                                       <button
                                         onClick={() => handleSheetCut(material.id, i)}
-                                        className={`px-2 py-1 rounded text-xs font-medium ${
+                                        disabled={isPending}
+                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 ${
                                           status === 'cut' 
                                             ? 'bg-green-600 text-white' 
                                             : 'bg-green-100 text-green-700 hover:bg-green-200'
-                                        }`}
-                                        // Always enabled for regular sheets
+                                        } ${isPending ? 'opacity-75' : ''}`}
                                       >
                                         Cut
                                       </button>
                                       <button
                                         onClick={() => handleSheetSkip(material.id, i)}
-                                        className={`px-2 py-1 rounded text-xs font-medium ${
+                                        disabled={isPending}
+                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 ${
                                           status === 'skip' 
                                             ? 'bg-red-600 text-white' 
                                             : 'bg-red-100 text-red-700 hover:bg-red-200'
-                                        }`}
+                                        } ${isPending ? 'opacity-75' : ''}`}
                                       >
                                         Skip
                                       </button>

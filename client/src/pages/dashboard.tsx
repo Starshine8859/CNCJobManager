@@ -473,10 +473,10 @@ export default function Dashboard() {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="w-full space-y-2">
                             {/* Original Sheets Progress */}
-                            <div>
-                              <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                <span>Original Sheets</span>
-                                <span>{completedSheets}/{effectiveTotalSheets}</span>
+                                                        <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-xs text-gray-600 font-medium">Original Sheets</span>
+                                <span className="text-xs text-gray-700 font-semibold bg-gray-100 px-2 py-0.5 rounded">{completedSheets}/{effectiveTotalSheets}</span>
                               </div>
                               <Progress value={progress} className="h-2" />
                             </div>
@@ -506,15 +506,15 @@ export default function Dashboard() {
                               
                               if (recutTotal > 0) {
                                 return (
-                                                                     <div>
-                                     <div className="flex justify-between text-xs text-orange-600 mb-1">
-                                       <span>Recut Sheets</span>
-                                       <span>{recutCompleted}/{recutEffectiveTotal}</span>
-                                     </div>
-                                     <div className="relative h-2 bg-orange-100 rounded-full overflow-hidden">
-                                       <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${recutProgress}%` }}></div>
-                                     </div>
-                                   </div>
+                                  <div>
+                                    <div className="flex justify-between items-center mb-1">
+                                      <span className="text-xs text-orange-600 font-medium">Recut Sheets</span>
+                                      <span className="text-xs text-orange-700 font-semibold bg-orange-100 px-2 py-0.5 rounded">{recutCompleted}/{recutEffectiveTotal}</span>
+                                    </div>
+                                    <div className="relative h-2 bg-orange-100 rounded-full overflow-hidden">
+                                      <div className="h-full bg-orange-500 rounded-full transition-all" style={{ width: `${recutProgress}%` }}></div>
+                                    </div>
+                                  </div>
                                 );
                               }
                               return null;
