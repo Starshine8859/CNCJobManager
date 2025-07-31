@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Clock, Menu, X, Settings, LogOut, Plus } from "lucide-react";
+import { Clock, Menu, X, Settings, LogOut, Plus, Package, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -15,7 +16,7 @@ interface LayoutProps {
 
 export default function Layout({ children, currentTime = new Date() }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { user } = useAuth();
   const { toast } = useToast();
 
@@ -135,6 +136,37 @@ export default function Layout({ children, currentTime = new Date() }: LayoutPro
                     </a>
                   </Link>
                 )}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className={`font-medium pb-2 h-auto p-0 ${
+                      location.startsWith('/supplies') || location.startsWith('/purchase-orders') || location.startsWith('/checkout-order') || location.startsWith('/supply-locations')
+                        ? 'text-primary border-b-2 border-primary' 
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}>
+                      <Package className="h-4 w-4 mr-2" />
+                      <span>Inventory</span>
+                      <ChevronDown className="h-4 w-4 ml-1" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-48">
+                    <DropdownMenuItem onClick={() => setLocation("/supplies")}>
+                      <Package className="h-4 w-4 mr-2" />
+                      Supplies
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLocation("/purchase-orders")}>
+                      <Package className="h-4 w-4 mr-2" />
+                      Purchase Orders
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLocation("/checkout-order")}>
+                      <Package className="h-4 w-4 mr-2" />
+                      Checkout/Order
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLocation("/supply-locations")}>
+                      <Package className="h-4 w-4 mr-2" />
+                      Supply Locations
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </nav>
             </div>
             <div className="flex items-center space-x-4">

@@ -174,7 +174,14 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
     mutationFn: ({ materialId, recutIndex, status }: { materialId: number; recutIndex: number; status: string }) =>
       apiRequest('PUT', `/api/materials/${materialId}/recut-status`, { recutIndex, status }),
     onMutate: ({ materialId, recutIndex, status }) => {
-      const material = job.materials.find(m => m.id === materialId);
+      // Find material across all cutlists
+      let material = null;
+      if (job?.cutlists) {
+        for (const cutlist of job.cutlists) {
+          material = cutlist.materials?.find((m: any) => m.id === materialId);
+          if (material) break;
+        }
+      }
       if (!material) return Promise.resolve();
       
       // This is a recut sheet - use recut optimistic state
@@ -460,7 +467,9 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
           <h3 className="text-lg font-semibold">Sheet Cutting Checklist</h3>
           <p className="text-sm text-gray-600">Click on each sheet to mark as cut or not cut. Sheets that can't be cut can be skipped.</p>
           
-          {job.materials.map((material) => (
+          {job.cutlists?.flatMap((cutlist) => 
+            cutlist.materials || []
+          ).map((material: any) => (
             <div key={material.id} className="border border-gray-200 rounded-lg p-6">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center space-x-3">

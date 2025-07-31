@@ -601,9 +601,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/colors/:id", requireAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
+      console.log('Delete color request for ID:', id, 'by user:', req.session.user?.username);
       await storage.deleteColor(id);
+      console.log('Color deleted successfully');
       res.json({ message: "Color deleted successfully" });
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Delete color error:', error);
+      // Check if it's a foreign key constraint error
+      if (error.message?.includes('foreign key') || error.message?.includes('violates foreign key constraint')) {
+        return res.status(400).json({ 
+          message: "Cannot delete color because it is being used in one or more jobs. Please remove the color from all jobs first." 
+        });
+      }
       res.status(500).json({ message: "Failed to delete color" });
     }
   });
@@ -667,7 +676,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Username and password are required" });
       }
       
-      if (!['user', 'admin', 'super_admin'].includes(role)) {
+      if (!['user', 'admin', 'super_admin'].includes(role || '')) {
         return res.status(400).json({ message: "Invalid role specified" });
       }
 

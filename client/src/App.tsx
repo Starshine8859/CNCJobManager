@@ -9,6 +9,10 @@ import Admin from "@/pages/admin";
 import UserManagement from "@/pages/user-management";
 import PopupPage from "@/pages/popup";
 import NotFound from "@/pages/not-found";
+import Supplies from "@/pages/supplies";
+import PurchaseOrders from "@/pages/purchase-orders";
+import CheckoutOrder from "@/pages/checkout-order";
+import SupplyLocations from "@/pages/supply-locations";
 import { useAuth } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
 
@@ -40,6 +44,10 @@ function Router() {
       <Route path="/admin" component={Admin} />
       <Route path="/users" component={UserManagement} />
       <Route path="/popup/:jobId" component={PopupPage} />
+      <Route path="/supplies" component={Supplies} />
+      <Route path="/purchase-orders" component={PurchaseOrders} />
+      <Route path="/checkout-order" component={CheckoutOrder} />
+      <Route path="/supply-locations" component={SupplyLocations} />
       <Route component={NotFound} />
     </Switch>
   );

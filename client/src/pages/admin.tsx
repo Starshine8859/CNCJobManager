@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Plus, Edit, Trash2, Users, Palette, Upload, X } from "lucide-react";
+import { Plus, Edit, Trash2, Users, Palette, Upload, X, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -25,6 +26,8 @@ export default function Admin() {
   const [showEditColorDialog, setShowEditColorDialog] = useState(false);
   const [editingColor, setEditingColor] = useState<ColorWithGroup | null>(null);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
+  const [showDeleteColorDialog, setShowDeleteColorDialog] = useState(false);
+  const [colorToDelete, setColorToDelete] = useState<ColorWithGroup | null>(null);
   const [uploadedTextureUrl, setUploadedTextureUrl] = useState<string>("");
   const [isUploading, setIsUploading] = useState(false);
   
@@ -146,6 +149,19 @@ export default function Admin() {
     setShowEditColorDialog(true);
   };
 
+  const handleDeleteColor = (color: ColorWithGroup) => {
+    setColorToDelete(color);
+    setShowDeleteColorDialog(true);
+  };
+
+  const confirmDeleteColor = () => {
+    if (colorToDelete) {
+      deleteColorMutation.mutate(colorToDelete.id);
+      setShowDeleteColorDialog(false);
+      setColorToDelete(null);
+    }
+  };
+
   // Mutations
   const createUserMutation = useMutation({
     mutationFn: (data: any) => apiRequest('POST', '/api/users', data),
@@ -186,12 +202,17 @@ export default function Admin() {
   });
 
   const deleteColorMutation = useMutation({
-    mutationFn: (id: number) => apiRequest('DELETE', `/api/colors/${id}`),
+    mutationFn: (id: number) => {
+      console.log('Attempting to delete color with ID:', id);
+      return apiRequest('DELETE', `/api/colors/${id}`);
+    },
     onSuccess: () => {
+      console.log('Color deleted successfully');
       queryClient.invalidateQueries({ queryKey: ['/api/colors'] });
       toast({ title: "Success", description: "Color deleted successfully" });
     },
     onError: (error: any) => {
+      console.error('Delete color error:', error);
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
@@ -605,7 +626,7 @@ export default function Admin() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => deleteColorMutation.mutate(color.id)}
+                            onClick={() => handleDeleteColor(color)}
                             disabled={deleteColorMutation.isPending}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -735,7 +756,37 @@ export default function Admin() {
               </Card>
             </TabsContent>
           )}
+
+
         </Tabs>
+
+        {/* Delete Color Confirmation Dialog */}
+        <AlertDialog open={showDeleteColorDialog} onOpenChange={setShowDeleteColorDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="flex items-center space-x-2">
+                <AlertTriangle className="h-5 w-5 text-red-500" />
+                <span>Delete Color</span>
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete the color "{colorToDelete?.name}"? 
+                <br />
+                <br />
+                <strong>Warning:</strong> This action cannot be undone. If this color is being used in any jobs, the deletion will fail.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction 
+                onClick={confirmDeleteColor}
+                className="bg-red-600 hover:bg-red-700"
+                disabled={deleteColorMutation.isPending}
+              >
+                {deleteColorMutation.isPending ? "Deleting..." : "Delete Color"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </Layout>
   );
