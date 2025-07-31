@@ -37,14 +37,63 @@ function RecutHistorySection({ materialId }: RecutHistorySectionProps) {
   // Type-safe access to recut entries
   const entries = Array.isArray(recutEntries) ? recutEntries : [];
 
+  // Loading states for individual recut sheet buttons - separate for cut and skip
+  const [loadingRecutCutButtons, setLoadingRecutCutButtons] = useState<Record<string, Set<number>>>({});
+  const [loadingRecutSkipButtons, setLoadingRecutSkipButtons] = useState<Record<string, Set<number>>>({});
+
   const updateRecutSheetStatusMutation = useMutation({
-    mutationFn: ({ recutId, sheetIndex, status }: { recutId: number; sheetIndex: number; status: string }) =>
+    mutationFn: ({ recutId, sheetIndex, status, actionType }: { 
+      recutId: number; 
+      sheetIndex: number; 
+      status: string;
+      actionType: 'cut' | 'skip';
+    }) =>
       apiRequest('PUT', `/api/recuts/${recutId}/sheet-status`, { sheetIndex, status }),
-    onSuccess: () => {
+    onMutate: ({ recutId, sheetIndex, status, actionType }) => {
+      // Set loading state based on which button was clicked
+      if (actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [recutId]: new Set([...Array.from(prev[recutId] || []), sheetIndex])
+        }));
+      } else if (actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [recutId]: new Set([...Array.from(prev[recutId] || []), sheetIndex])
+        }));
+      }
+    },
+    onSuccess: (_, variables) => {
+      // Clear loading state based on which button was clicked
+      if (variables.actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       queryClient.invalidateQueries({ queryKey: [`/api/materials/${materialId}/recuts`] });
       queryClient.invalidateQueries({ queryKey: ['/api/jobs'] });
     },
-    onError: () => {
+    onError: (error, variables) => {
+      // Clear loading state based on which button was clicked
+      if (variables.actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       toast({ title: "Error", description: "Failed to update recut sheet status" });
     }
   });
@@ -62,6 +111,28 @@ function RecutHistorySection({ materialId }: RecutHistorySectionProps) {
     }
   });
 
+  const handleRecutSheetCut = (recutId: number, sheetIndex: number, currentStatus: string) => {
+    // Toggle: if already cut, set to pending; otherwise set to cut
+    const newStatus = currentStatus === 'cut' ? 'pending' : 'cut';
+    updateRecutSheetStatusMutation.mutate({ 
+      recutId, 
+      sheetIndex, 
+      status: newStatus,
+      actionType: 'cut'
+    });
+  };
+
+  const handleRecutSheetSkip = (recutId: number, sheetIndex: number, currentStatus: string) => {
+    // Toggle: if already skipped, set to pending; otherwise set to skip
+    const newStatus = currentStatus === 'skip' ? 'pending' : 'skip';
+    updateRecutSheetStatusMutation.mutate({ 
+      recutId, 
+      sheetIndex, 
+      status: newStatus,
+      actionType: 'skip'
+    });
+  };
+
   if (isLoading) {
     return (
       <div className="mt-4 p-3 bg-orange-50 rounded-lg">
@@ -71,140 +142,112 @@ function RecutHistorySection({ materialId }: RecutHistorySectionProps) {
     );
   }
 
-  if (!entries.length) {
+  if (entries.length === 0) {
     return (
       <div className="mt-4 p-3 bg-orange-50 rounded-lg">
         <h4 className="font-medium mb-2 text-orange-800">Recut Tracking</h4>
-        <div className="text-sm text-orange-600">No recut entries yet</div>
+        <div className="text-sm text-orange-600">No recut entries found</div>
       </div>
     );
   }
 
-  // Calculate total recut sheets
-  const totalRecutQuantity = entries.reduce((sum: number, entry: any) => sum + entry.quantity, 0);
-  const totalCompletedRecuts = entries.reduce((sum: number, entry: any) => sum + (entry.completedSheets || 0), 0);
-
   return (
-    <div className="mt-4 space-y-3">
-      <h4 className="font-medium text-orange-800">
-        Recut Tracking ({totalCompletedRecuts}/{totalRecutQuantity} completed)
-      </h4>
-      
-      {/* Each Recut Entry as Separate Section */}
-      {entries.map((entry: any, entryIndex: number) => {
-        const sheetStatuses = entry.sheetStatuses || [];
-        const completedCount = sheetStatuses.filter((s: string) => s === 'cut').length;
-        const skippedCount = sheetStatuses.filter((s: string) => s === 'skip').length;
-        const effectiveTotal = entry.quantity - skippedCount;
-        const progress = effectiveTotal > 0 ? Math.round((completedCount / effectiveTotal) * 100) : 0;
+    <div className="mt-4 p-3 bg-orange-50 rounded-lg">
+      <h4 className="font-medium mb-3 text-orange-800">Recut Tracking</h4>
+      <div className="space-y-3">
+        {entries.map((entry: any, entryIndex: number) => {
+          const completedCount = entry.sheetStatuses?.filter((s: string) => s === 'cut').length || 0;
+          const skippedCount = entry.sheetStatuses?.filter((s: string) => s === 'skip').length || 0;
+          const effectiveTotal = entry.quantity - skippedCount;
+          const progressPercentage = effectiveTotal > 0 ? Math.round((completedCount / effectiveTotal) * 100) : 0;
 
-        return (
-          <div key={entry.id} className="p-3 bg-orange-50 rounded-lg border border-orange-200">
-            {/* Recut Header */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <RotateCcw className="w-4 h-4 text-orange-600" />
-                <span className="font-medium text-orange-800">
-                  Recut #{entryIndex + 1} ({completedCount}/{entry.quantity} sheets)
-                </span>
-                {entry.reason && (
-                  <span className="text-sm text-orange-600">- {entry.reason}</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 text-xs text-orange-600">
-                  {entry.user && (
-                    <div className="flex items-center gap-1">
-                      <User className="w-3 h-3" />
-                      {entry.user.username}
-                    </div>
+          return (
+            <div key={entry.id} className="bg-white p-3 rounded border border-orange-200">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm font-medium text-orange-800">
+                    Recut #{entryIndex + 1} - {entry.quantity} sheets
+                  </span>
+                  {entry.reason && (
+                    <span className="text-xs text-orange-600 bg-orange-100 px-2 py-1 rounded">
+                      {entry.reason}
+                    </span>
                   )}
-                  <div className="flex items-center gap-1">
-                    <Calendar className="w-3 h-3" />
-                    {new Date(entry.createdAt).toLocaleDateString()}
-                  </div>
                 </div>
                 <Button
                   variant="destructive"
                   size="sm"
                   onClick={() => {
-                    if (confirm(`Delete recut entry #${entryIndex + 1}? This will permanently remove this recut batch.`)) {
+                    if (confirm(`Delete recut entry #${entryIndex + 1}?`)) {
                       deleteRecutMutation.mutate(entry.id);
                     }
                   }}
                   disabled={deleteRecutMutation.isPending}
-                  className="w-6 h-6 p-0 flex-shrink-0 text-xs"
+                  className="w-6 h-6 p-0 flex-shrink-0"
                 >
                   ×
                 </Button>
               </div>
-            </div>
 
-            {/* Progress Bar */}
-            <div className="flex items-center space-x-2 mb-3">
-              <Progress value={progress} className="flex-1 h-2" />
-              <span className="text-sm font-medium text-orange-700">{progress}%</span>
-            </div>
-            {skippedCount > 0 && (
-              <div className="text-xs text-orange-600 mb-3">
-                {skippedCount} sheets skipped
+              {/* Progress Bar */}
+              <div className="mb-3">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-xs text-orange-600 font-medium">Recut: {completedCount}/{effectiveTotal}</span>
+                  <span className="text-xs text-orange-700 font-semibold bg-orange-100 px-2 py-0.5 rounded">{progressPercentage}%</span>
+                </div>
+                <Progress value={progressPercentage} className="h-2" />
               </div>
-            )}
 
-            {/* Individual Recut Sheet Grid */}
-            <div className="grid grid-cols-6 gap-2">
-              {Array.from({ length: entry.quantity }, (_, i) => {
-                const status = sheetStatuses[i] || 'pending';
-                
-                return (
-                  <div key={`recut-${entry.id}-sheet-${i}`} className="flex flex-col items-center gap-1">
-                    <div className="text-sm font-medium text-orange-800">
-                      Sheet {i + 1}
+              {/* Sheet Grid */}
+              <div className="grid grid-cols-6 gap-2">
+                {Array.from({ length: entry.quantity }, (_, i) => {
+                  const status = entry.sheetStatuses?.[i] || 'pending';
+                  const isCutLoading = loadingRecutCutButtons[entry.id]?.has(i) || false;
+                  const isSkipLoading = loadingRecutSkipButtons[entry.id]?.has(i) || false;
+                  
+                  return (
+                    <div key={i} className="flex flex-col items-center gap-1">
+                      <div className="text-sm font-medium">
+                        Sheet {i + 1}
+                      </div>
+                      <div className="flex gap-1 items-center">
+                        <button
+                          onClick={() => handleRecutSheetCut(entry.id, i, status)}
+                          disabled={isCutLoading}
+                          className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 flex items-center gap-1 ${
+                            status === 'cut' 
+                              ? 'bg-green-600 text-white' 
+                              : 'bg-green-100 text-green-700 hover:bg-green-200'
+                          } ${isCutLoading ? 'opacity-75' : ''}`}
+                        >
+                          {isCutLoading ? (
+                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                          ) : null}
+                          Cut
+                        </button>
+                        <button
+                          onClick={() => handleRecutSheetSkip(entry.id, i, status)}
+                          disabled={isSkipLoading}
+                          className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 flex items-center gap-1 ${
+                            status === 'skip' 
+                              ? 'bg-red-600 text-white' 
+                              : 'bg-red-100 text-red-700 hover:bg-red-200'
+                          } ${isSkipLoading ? 'opacity-75' : ''}`}
+                        >
+                          {isSkipLoading ? (
+                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                          ) : null}
+                          Skip
+                        </button>
+                      </div>
                     </div>
-                    
-                    <div className="flex gap-1 items-center">
-                      <button
-                        onClick={() => {
-                          const newStatus = status === 'cut' ? 'pending' : 'cut';
-                          updateRecutSheetStatusMutation.mutate({ 
-                            recutId: entry.id, 
-                            sheetIndex: i, 
-                            status: newStatus 
-                          });
-                        }}
-                        className={`px-2 py-1 rounded text-xs font-medium ${
-                          status === 'cut' 
-                            ? 'bg-green-600 text-white' 
-                            : 'bg-green-100 text-green-700 hover:bg-green-200'
-                        }`}
-                      >
-                        Cut
-                      </button>
-                      <button
-                        onClick={() => {
-                          const newStatus = status === 'skip' ? 'pending' : 'skip';
-                          updateRecutSheetStatusMutation.mutate({ 
-                            recutId: entry.id, 
-                            sheetIndex: i, 
-                            status: newStatus 
-                          });
-                        }}
-                        className={`px-2 py-1 rounded text-xs font-medium ${
-                          status === 'skip' 
-                            ? 'bg-red-600 text-white' 
-                            : 'bg-red-100 text-red-700 hover:bg-red-200'
-                        }`}
-                      >
-                        Skip
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -219,6 +262,10 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
   
   // Optimistic state for immediate UI updates
   const [optimisticSheetStatuses, setOptimisticSheetStatuses] = useState<Record<string, Record<number, string>>>({});
+  
+  // Loading states for individual sheet buttons - separate for cut and skip
+  const [loadingCutButtons, setLoadingCutButtons] = useState<Record<string, Set<number>>>({});
+  const [loadingSkipButtons, setLoadingSkipButtons] = useState<Record<string, Set<number>>>({});
   
   // WebSocket for real-time updates
   const handleWebSocketMessage = (message: MessageEvent) => {
@@ -367,6 +414,19 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
     mutationFn: ({ materialId, sheetIndex, status }: { materialId: number; sheetIndex: number; status: string }) =>
       apiRequest('PUT', `/api/materials/${materialId}/sheet-status`, { sheetIndex, status }),
     onMutate: ({ materialId, sheetIndex, status }) => {
+      // Set loading state based on action type
+      if (status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      } else if (status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      }
+      
       // Immediately update the UI optimistically
       setOptimisticSheetStatuses(prev => ({
         ...prev,
@@ -377,13 +437,39 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
       }));
       
       // Return context for rollback if needed
-      return { materialId, sheetIndex, previousStatus: optimisticSheetStatuses[materialId]?.[sheetIndex] };
+      return { materialId, sheetIndex, previousStatus: optimisticSheetStatuses[materialId]?.[sheetIndex], action: status };
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       queryClient.invalidateQueries({ queryKey: ['/api/jobs'] });
       queryClient.invalidateQueries({ queryKey: ['/api/dashboard/stats'] });
     },
     onError: (error, variables, context) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       // Rollback optimistic update on error
       if (context) {
         setOptimisticSheetStatuses(prev => ({
@@ -943,7 +1029,8 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                                 const optimisticStatus = optimisticSheetStatuses[material.id]?.[i];
                                 const serverStatus = sheetStatuses[i] || 'pending';
                                 const status = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
-                                const isPending = updateSheetStatusMutation.isPending;
+                                const isCutLoading = loadingCutButtons[material.id]?.has(i) || false;
+                                const isSkipLoading = loadingSkipButtons[material.id]?.has(i) || false;
                                 
                                 return (
                                   <div key={`sheet-${material.id}-${i}-${updateCounter}`} className="flex flex-col items-center gap-1">
@@ -954,24 +1041,30 @@ export default function JobDetailsModal({ job, open, onOpenChange, viewOnlyMode 
                                     <div className="flex gap-1 items-center">
                                       <button
                                         onClick={() => handleSheetCut(material.id, i)}
-                                        disabled={isPending}
-                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 ${
+                                        disabled={isCutLoading}
+                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 flex items-center gap-1 ${
                                           status === 'cut' 
                                             ? 'bg-green-600 text-white' 
                                             : 'bg-green-100 text-green-700 hover:bg-green-200'
-                                        } ${isPending ? 'opacity-75' : ''}`}
+                                        } ${isCutLoading ? 'opacity-75' : ''}`}
                                       >
+                                        {isCutLoading ? (
+                                          <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                                        ) : null}
                                         Cut
                                       </button>
                                       <button
                                         onClick={() => handleSheetSkip(material.id, i)}
-                                        disabled={isPending}
-                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 ${
+                                        disabled={isSkipLoading}
+                                        className={`px-2 py-1 rounded text-xs font-medium transition-all duration-150 flex items-center gap-1 ${
                                           status === 'skip' 
                                             ? 'bg-red-600 text-white' 
                                             : 'bg-red-100 text-red-700 hover:bg-red-200'
-                                        } ${isPending ? 'opacity-75' : ''}`}
+                                        } ${isSkipLoading ? 'opacity-75' : ''}`}
                                       >
+                                        {isSkipLoading ? (
+                                          <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                                        ) : null}
                                         Skip
                                       </button>
                                       {status === 'skip' && (

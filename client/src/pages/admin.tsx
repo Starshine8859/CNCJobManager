@@ -22,6 +22,8 @@ export default function Admin() {
   const [currentTime] = useState(new Date());
   const [showUserDialog, setShowUserDialog] = useState(false);
   const [showColorDialog, setShowColorDialog] = useState(false);
+  const [showEditColorDialog, setShowEditColorDialog] = useState(false);
+  const [editingColor, setEditingColor] = useState<ColorWithGroup | null>(null);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
   const [uploadedTextureUrl, setUploadedTextureUrl] = useState<string>("");
   const [isUploading, setIsUploading] = useState(false);
@@ -40,6 +42,11 @@ export default function Admin() {
   });
 
   const colorForm = useForm({
+    resolver: zodResolver(insertColorSchema),
+    defaultValues: { name: "", hexColor: "#FFFFFF", groupId: undefined, texture: "" },
+  });
+
+  const editColorForm = useForm({
     resolver: zodResolver(insertColorSchema),
     defaultValues: { name: "", hexColor: "#FFFFFF", groupId: undefined, texture: "" },
   });
@@ -82,7 +89,12 @@ export default function Admin() {
     },
     onSuccess: (data) => {
       setUploadedTextureUrl(data.fileUrl);
-      colorForm.setValue('texture', data.fileUrl);
+      // Set texture for the appropriate form based on which dialog is open
+      if (showEditColorDialog) {
+        editColorForm.setValue('texture', data.fileUrl);
+      } else {
+        colorForm.setValue('texture', data.fileUrl);
+      }
       setIsUploading(false);
       toast({ title: "Success", description: "Texture uploaded successfully" });
     },
@@ -101,10 +113,37 @@ export default function Admin() {
     }
   };
 
+  const handleEditFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setIsUploading(true);
+      uploadTextureMutation.mutate(file);
+    }
+  };
+
   // Clear uploaded texture
   const clearTexture = () => {
     setUploadedTextureUrl("");
     colorForm.setValue('texture', "");
+  };
+
+  const clearEditTexture = () => {
+    setUploadedTextureUrl("");
+    editColorForm.setValue('texture', "");
+  };
+
+  // Handle opening edit dialog
+  const handleEditColor = (color: ColorWithGroup) => {
+    console.log('Opening edit dialog for color:', color);
+    setEditingColor(color);
+    editColorForm.reset({
+      name: color.name,
+      hexColor: color.hexColor,
+      groupId: color.groupId || undefined as any,
+      texture: color.texture || "",
+    });
+    setUploadedTextureUrl(color.texture || "");
+    setShowEditColorDialog(true);
   };
 
   // Mutations
@@ -154,6 +193,21 @@ export default function Admin() {
     },
     onError: (error: any) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateColorMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: any }) => apiRequest('PUT', `/api/colors/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/colors'] });
+      editColorForm.reset();
+      setShowEditColorDialog(false);
+      setEditingColor(null);
+      setUploadedTextureUrl("");
+      toast({ title: "Success", description: "Color updated successfully" });
+    },
+    onError: (error: any) => {
+      toast({ title: "Error", description: error.message || "Failed to update color", variant: "destructive" });
     },
   });
 
@@ -409,6 +463,109 @@ export default function Admin() {
                       </Form>
                     </DialogContent>
                   </Dialog>
+
+                  {/* Edit Color Dialog */}
+                  <Dialog open={showEditColorDialog} onOpenChange={setShowEditColorDialog}>
+                    <DialogContent className="max-w-md">
+                      <DialogHeader>
+                        <DialogTitle>Edit Color: {editingColor?.name}</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-sm font-medium">Color Name</label>
+                          <input
+                            type="text"
+                            value={editColorForm.watch('name')}
+                            onChange={(e) => editColorForm.setValue('name', e.target.value)}
+                            placeholder="e.g., Biscuit, Walnut, White Melamine"
+                            className="w-full p-2 border rounded mt-1"
+                          />
+                        </div>
+                        
+                        <div>
+                          <label className="text-sm font-medium">Fallback Color</label>
+                          <div className="flex space-x-2 mt-1">
+                            <input
+                              type="color"
+                              value={editColorForm.watch('hexColor')}
+                              onChange={(e) => editColorForm.setValue('hexColor', e.target.value)}
+                              className="w-20 h-10"
+                            />
+                            <input
+                              type="text"
+                              value={editColorForm.watch('hexColor')}
+                              onChange={(e) => editColorForm.setValue('hexColor', e.target.value)}
+                              placeholder="#FFFFFF"
+                              className="flex-1 p-2 border rounded"
+                            />
+                          </div>
+                        </div>
+                        
+                        <div>
+                          <label className="text-sm font-medium">Color Group</label>
+                          <select
+                            value={editColorForm.watch('groupId') || ''}
+                            onChange={(e) => editColorForm.setValue('groupId', e.target.value ? parseInt(e.target.value) : undefined as any)}
+                            className="w-full p-2 border rounded mt-1"
+                          >
+                            <option value="">No Group</option>
+                            {colorGroups.map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        
+                        <div>
+                          <label className="text-sm font-medium">Texture Image</label>
+                          <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center mt-1">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleEditFileUpload}
+                              className="hidden"
+                              id="edit-texture-upload"
+                              disabled={isUploading}
+                            />
+                            <label htmlFor="edit-texture-upload" className="cursor-pointer">
+                              <Upload className="h-8 w-8 mx-auto text-gray-400 mb-2" />
+                              <p className="text-sm text-gray-600">
+                                {isUploading ? "Uploading..." : "Click to upload texture image"}
+                              </p>
+                            </label>
+                          </div>
+                          {editColorForm.watch('texture') && (
+                            <div className="mt-2">
+                              <img
+                                src={editColorForm.watch('texture')}
+                                alt="Texture preview"
+                                className="w-full h-32 object-cover rounded border"
+                              />
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="flex justify-end space-x-2">
+                          <Button type="button" variant="outline" onClick={() => setShowEditColorDialog(false)}>
+                            Cancel
+                          </Button>
+                          <Button 
+                            onClick={() => {
+                              const data = editColorForm.getValues();
+                              console.log('Edit form submitted:', data);
+                              if (editingColor) {
+                                updateColorMutation.mutate({ id: editingColor.id, data });
+                              }
+                            }}
+                            disabled={updateColorMutation.isPending}
+                          >
+                            Update Color
+                          </Button>
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
                 </div>
               </CardHeader>
               <CardContent>
@@ -437,14 +594,23 @@ export default function Admin() {
                             )}
                           </div>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => deleteColorMutation.mutate(color.id)}
-                          disabled={deleteColorMutation.isPending}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center space-x-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEditColor(color)}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => deleteColorMutation.mutate(color.id)}
+                            disabled={deleteColorMutation.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   ))}

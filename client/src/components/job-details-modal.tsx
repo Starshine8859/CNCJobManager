@@ -23,6 +23,10 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
   const [optimisticSheetStatuses, setOptimisticSheetStatuses] = useState<Record<number, string[]>>({});
   const [optimisticRecutStatuses, setOptimisticRecutStatuses] = useState<Record<number, string[]>>({});
 
+  // Loading states for individual sheet buttons - separate for cut and skip
+  const [loadingCutButtons, setLoadingCutButtons] = useState<Record<string, Set<number>>>({});
+  const [loadingSkipButtons, setLoadingSkipButtons] = useState<Record<string, Set<number>>>({});
+
   // Clear optimistic state when job changes (modal open/close)
   useEffect(() => {
     if (!open) {
@@ -35,7 +39,7 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
   useEffect(() => {
     setOptimisticSheetStatuses({});
     setOptimisticRecutStatuses({});
-  }, [job?.materials]);
+  }, [job?.cutlists]);
 
   const updateMaterialMutation = useMutation({
     mutationFn: ({ materialId, completedSheets }: { materialId: number; completedSheets: number }) =>
@@ -50,8 +54,27 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
     mutationFn: ({ materialId, sheetIndex, status }: { materialId: number; sheetIndex: number; status: string }) =>
       apiRequest('PUT', `/api/materials/${materialId}/sheet-status`, { sheetIndex, status }),
     onMutate: ({ materialId, sheetIndex, status }) => {
-      // Determine if this is a regular sheet or recut sheet
-      const material = job.materials.find(m => m.id === materialId);
+      // Set loading state based on action type
+      if (status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      } else if (status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      }
+
+      // Find material across all cutlists
+      let material = null;
+      if (job?.cutlists) {
+        for (const cutlist of job.cutlists) {
+          material = cutlist.materials?.find(m => m.id === materialId);
+          if (material) break;
+        }
+      }
       if (!material) return Promise.resolve();
       
       // For now, treat all sheets in the main grid as regular sheets
@@ -60,7 +83,7 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
       
       if (isRecutSheet) {
         // This is a recut sheet - use recut optimistic state
-        const recutIndex = sheetIndex - originalSheetCount;
+        const recutIndex = sheetIndex - material.totalSheets;
         setOptimisticRecutStatuses(prev => {
           const currentStatuses = prev[materialId] || [...((material as any).recutStatuses || [])];
           const newStatuses = [...currentStatuses];
@@ -99,10 +122,36 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
       
       return Promise.resolve();
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       queryClient.invalidateQueries({ queryKey: ['/api/jobs'] });
     },
-    onError: () => {
+    onError: (error, variables) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       toast({ title: "Error", description: "Failed to update sheet status" });
       setOptimisticSheetStatuses({});
       setOptimisticRecutStatuses({});
@@ -200,13 +249,21 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
     return `${hours}h ${minutes}m`;
   };
 
-  const totalSheets = job.materials.reduce((sum, m) => sum + m.totalSheets, 0);
-  const completedSheets = job.materials.reduce((sum, m) => sum + m.completedSheets, 0);
+  const totalSheets = job?.cutlists?.reduce((sum, cutlist) => 
+    sum + (cutlist.materials?.reduce((materialSum, m) => materialSum + m.totalSheets, 0) || 0), 0) || 0;
+  const completedSheets = job?.cutlists?.reduce((sum, cutlist) => 
+    sum + (cutlist.materials?.reduce((materialSum, m) => materialSum + m.completedSheets, 0) || 0), 0) || 0;
   const progress = totalSheets > 0 ? Math.round((completedSheets / totalSheets) * 100) : 0;
 
   const handleSheetCut = (materialId: number, sheetIndex: number) => {
-    // Get current status to determine if we should toggle
-    const material = job.materials.find(m => m.id === materialId);
+    // Find material across all cutlists
+    let material = null;
+    if (job?.cutlists) {
+      for (const cutlist of job.cutlists) {
+        material = cutlist.materials?.find(m => m.id === materialId);
+        if (material) break;
+      }
+    }
     if (!material) return;
     
     // For now, treat all sheets in the main grid as regular sheets
@@ -215,7 +272,7 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
     
     let currentStatus;
     if (isRecutSheet) {
-      const recutIndex = sheetIndex - originalSheetCount;
+      const recutIndex = sheetIndex - material.totalSheets;
       const optimisticRecutStats = optimisticRecutStatuses[materialId];
       const serverRecutStatuses = (material as any).recutStatuses || [];
       currentStatus = optimisticRecutStats && optimisticRecutStats[recutIndex] !== undefined 
@@ -235,8 +292,14 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
   };
 
   const handleSheetSkip = (materialId: number, sheetIndex: number) => {
-    // Get current status to determine if we should toggle
-    const material = job.materials.find(m => m.id === materialId);
+    // Find material across all cutlists
+    let material = null;
+    if (job?.cutlists) {
+      for (const cutlist of job.cutlists) {
+        material = cutlist.materials?.find(m => m.id === materialId);
+        if (material) break;
+      }
+    }
     if (!material) return;
     
     // For now, treat all sheets in the main grid as regular sheets
@@ -245,7 +308,7 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
     
     let currentStatus;
     if (isRecutSheet) {
-      const recutIndex = sheetIndex - originalSheetCount;
+      const recutIndex = sheetIndex - material.totalSheets;
       const optimisticRecutStats = optimisticRecutStatuses[materialId];
       const serverRecutStatuses = (material as any).recutStatuses || [];
       currentStatus = optimisticRecutStats && optimisticRecutStats[recutIndex] !== undefined 
@@ -265,8 +328,14 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
   };
 
   const handleRecutCut = (materialId: number, recutIndex: number) => {
-    // Get current recut status to determine if we should toggle
-    const material = job.materials.find(m => m.id === materialId);
+    // Find material across all cutlists
+    let material = null;
+    if (job?.cutlists) {
+      for (const cutlist of job.cutlists) {
+        material = cutlist.materials?.find(m => m.id === materialId);
+        if (material) break;
+      }
+    }
     if (!material) return;
     
     const optimisticRecutStats = optimisticRecutStatuses[materialId];
@@ -281,8 +350,14 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
   };
 
   const handleRecutSkip = (materialId: number, recutIndex: number) => {
-    // Get current recut status to determine if we should toggle
-    const material = job.materials.find(m => m.id === materialId);
+    // Find material across all cutlists
+    let material = null;
+    if (job?.cutlists) {
+      for (const cutlist of job.cutlists) {
+        material = cutlist.materials?.find(m => m.id === materialId);
+        if (material) break;
+      }
+    }
     if (!material) return;
     
     const optimisticRecutStats = optimisticRecutStatuses[materialId];
@@ -456,24 +531,36 @@ export default function JobDetailsModal({ job, open, onOpenChange }: JobDetailsM
                             isCut 
                               ? 'bg-green-500 border-green-500 text-white'
                               : 'bg-white border-gray-300 text-gray-600 hover:border-green-400'
-                          }`}
+                          } ${loadingCutButtons[material.id]?.has(index) ? 'opacity-75' : ''}`}
                           onClick={() => handleSheetCut(material.id, index)}
-                          disabled={updateSheetStatusMutation.isPending}
+                          disabled={loadingCutButtons[material.id]?.has(index)}
                         >
-                          <Scissors className="h-3 w-3" />
-                          <span className="text-xs mt-1">Cut</span>
+                          {loadingCutButtons[material.id]?.has(index) ? (
+                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <>
+                              <Scissors className="h-3 w-3" />
+                              <span className="text-xs mt-1">Cut</span>
+                            </>
+                          )}
                         </button>
                         <button
                           className={`h-10 px-3 text-xs font-medium rounded border-2 transition-colors flex flex-col items-center justify-center ${
                             isSkipped 
                               ? 'bg-red-500 border-red-500 text-white'
                               : 'bg-white border-gray-300 text-gray-600 hover:border-red-400'
-                          }`}
+                          } ${loadingSkipButtons[material.id]?.has(index) ? 'opacity-75' : ''}`}
                           onClick={() => handleSheetSkip(material.id, index)}
-                          disabled={updateSheetStatusMutation.isPending}
+                          disabled={loadingSkipButtons[material.id]?.has(index)}
                         >
-                          <X className="h-3 w-3" />
-                          <span className="text-xs mt-1">Skip</span>
+                          {loadingSkipButtons[material.id]?.has(index) ? (
+                            <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                          ) : (
+                            <>
+                              <X className="h-3 w-3" />
+                              <span className="text-xs mt-1">Skip</span>
+                            </>
+                          )}
                         </button>
                       </div>
                     </div>

@@ -14,15 +14,24 @@ interface JobPopupProps {
 }
 
 export function JobPopup({ jobId, onClose }: JobPopupProps) {
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [currentTime, setCurrentTime] = useState(Date.now());
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  
-  // Live timer state - copied from working job-details-modal-new.tsx
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [currentTime, setCurrentTime] = useState(Date.now());
   const [liveTimerSeconds, setLiveTimerSeconds] = useState<number>(0);
   const [timerStartTime, setTimerStartTime] = useState<Date | null>(null);
+
+  // Optimistic updates for immediate visual feedback
+  const [optimisticSheetStatuses, setOptimisticSheetStatuses] = useState<Record<string, Record<number, string>>>({});
   
+  // Loading states for individual sheet buttons - separate for cut and skip
+  const [loadingCutButtons, setLoadingCutButtons] = useState<Record<string, Set<number>>>({});
+  const [loadingSkipButtons, setLoadingSkipButtons] = useState<Record<string, Set<number>>>({});
+
+  // Loading states for individual recut sheet buttons - separate for cut and skip
+  const [loadingRecutCutButtons, setLoadingRecutCutButtons] = useState<Record<string, Set<number>>>({});
+  const [loadingRecutSkipButtons, setLoadingRecutSkipButtons] = useState<Record<string, Set<number>>>({});
+
   // NO optimistic updates in popup - use server state only for reliability
 
   // Update timer every second
@@ -99,7 +108,7 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
 
   // No optimistic state management needed in popup
 
-  // Direct server updates only - no optimistic state for reliability
+  // Direct server updates with optimistic updates and loading states
   const updateSheetMutation = useMutation({
     mutationFn: ({ materialId, sheetIndex, status }: { 
       materialId: number; 
@@ -108,33 +117,135 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
     }) => {
       return apiRequest('PUT', `/api/materials/${materialId}/sheet-status`, { sheetIndex, status });
     },
-    onSuccess: () => {
+    onMutate: ({ materialId, sheetIndex, status }) => {
+      // Set loading state based on action type
+      if (status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      } else if (status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [materialId]: new Set([...Array.from(prev[materialId] || []), sheetIndex])
+        }));
+      }
+      
+      // Immediately update the UI optimistically
+      setOptimisticSheetStatuses(prev => ({
+        ...prev,
+        [materialId]: {
+          ...prev[materialId],
+          [sheetIndex]: status
+        }
+      }));
+      
+      // Return context for rollback if needed
+      return { materialId, sheetIndex, previousStatus: optimisticSheetStatuses[materialId]?.[sheetIndex], action: status };
+    },
+    onSuccess: (_, variables) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
     },
-    onError: () => {
+    onError: (error: any, variables, context) => {
+      // Clear loading state based on action type
+      if (variables.status === 'cut') {
+        setLoadingCutButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.status === 'skip') {
+        setLoadingSkipButtons(prev => ({
+          ...prev,
+          [variables.materialId]: new Set(Array.from(prev[variables.materialId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
+      // Rollback optimistic update on error
+      if (context) {
+        setOptimisticSheetStatuses(prev => ({
+          ...prev,
+          [context.materialId]: {
+            ...prev[context.materialId],
+            [context.sheetIndex]: context.previousStatus || 'pending'
+          }
+        }));
+      }
+      
       toast({ title: "Error", description: "Failed to update sheet status" });
     }
   });
 
   const updateRecutSheetStatusMutation = useMutation({
-    mutationFn: ({ recutId, sheetIndex, status }: { 
+    mutationFn: ({ recutId, sheetIndex, status, actionType }: { 
       recutId: number; 
       sheetIndex: number; 
       status: 'cut' | 'skip' | 'pending';
+      actionType: 'cut' | 'skip';
     }) => {
       return apiRequest('PUT', `/api/recuts/${recutId}/sheet-status`, { sheetIndex, status });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
-      // Also invalidate recut queries to force refresh
-      queryClient.invalidateQueries({ queryKey: [`/api/materials`] });
+    onMutate: ({ recutId, sheetIndex, status, actionType }) => {
+      // Set loading state based on which button was clicked
+      if (actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [recutId]: new Set([...Array.from(prev[recutId] || []), sheetIndex])
+        }));
+      } else if (actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [recutId]: new Set([...Array.from(prev[recutId] || []), sheetIndex])
+        }));
+      }
     },
-    onError: () => {
+    onSuccess: (_, variables) => {
+      // Clear loading state based on which button was clicked
+      if (variables.actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+    },
+    onError: (error: any, variables) => {
+      // Clear loading state based on which button was clicked
+      if (variables.actionType === 'cut') {
+        setLoadingRecutCutButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      } else if (variables.actionType === 'skip') {
+        setLoadingRecutSkipButtons(prev => ({
+          ...prev,
+          [variables.recutId]: new Set(Array.from(prev[variables.recutId] || []).filter(i => i !== variables.sheetIndex))
+        }));
+      }
+      
       toast({ title: "Error", description: "Failed to update recut status" });
     }
   });
 
-  // Handle sheet cut - server state only
+  // Handle sheet cut - with toggle behavior
   const handleSheetCut = (materialId: number, sheetIndex: number) => {
     // Find material across all cutlists
     let material = null;
@@ -146,13 +257,18 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
     }
     if (!material) return;
     
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticSheetStatuses[materialId]?.[sheetIndex];
     const serverStatuses = material.sheetStatuses || [];
-    const currentStatus = serverStatuses[sheetIndex] || 'pending';
+    const serverStatus = serverStatuses[sheetIndex] || 'pending';
+    const currentStatus = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+    
+    // Toggle: if already cut, set to pending; otherwise set to cut
     const newStatus = currentStatus === 'cut' ? 'pending' : 'cut';
     updateSheetMutation.mutate({ materialId, sheetIndex, status: newStatus });
   };
 
-  // Handle sheet skip - server state only
+  // Handle sheet skip - with toggle behavior
   const handleSheetSkip = (materialId: number, sheetIndex: number) => {
     // Find material across all cutlists
     let material = null;
@@ -164,22 +280,29 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
     }
     if (!material) return;
     
+    // Get the current status (optimistic or server)
+    const optimisticStatus = optimisticSheetStatuses[materialId]?.[sheetIndex];
     const serverStatuses = material.sheetStatuses || [];
-    const currentStatus = serverStatuses[sheetIndex] || 'pending';
+    const serverStatus = serverStatuses[sheetIndex] || 'pending';
+    const currentStatus = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+    
+    // Toggle: if already skipped, set to pending; otherwise set to skip
     const newStatus = currentStatus === 'skip' ? 'pending' : 'skip';
     updateSheetMutation.mutate({ materialId, sheetIndex, status: newStatus });
   };
 
   // Handle recut cut - exactly like regular sheet handlers
   const handleRecutCut = (recutId: number, sheetIndex: number, currentStatus: string) => {
+    // Toggle: if already cut, set to pending; otherwise set to cut
     const newStatus = currentStatus === 'cut' ? 'pending' : 'cut';
-    updateRecutSheetStatusMutation.mutate({ recutId, sheetIndex, status: newStatus });
+    updateRecutSheetStatusMutation.mutate({ recutId, sheetIndex, status: newStatus, actionType: 'cut' });
   };
 
   // Handle recut skip - exactly like regular sheet handlers  
   const handleRecutSkip = (recutId: number, sheetIndex: number, currentStatus: string) => {
+    // Toggle: if already skipped, set to pending; otherwise set to skip
     const newStatus = currentStatus === 'skip' ? 'pending' : 'skip';
-    updateRecutSheetStatusMutation.mutate({ recutId, sheetIndex, status: newStatus });
+    updateRecutSheetStatusMutation.mutate({ recutId, sheetIndex, status: newStatus, actionType: 'skip' });
   };
 
   // Format duration - copied exactly from working job-details-modal-new.tsx
@@ -348,9 +471,13 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
                 {/* Sheet Grid - Exactly like main modal with Cut/Skip buttons */}
                 <div className="grid grid-cols-2 gap-2 p-2 bg-white rounded border">
                   {Array.from({ length: material.totalSheets }).map((_, index) => {
-                    // Use server status only - no optimistic updates in popup
+                    // Use optimistic status if available, otherwise fall back to server status
+                    const optimisticStatus = optimisticSheetStatuses[material.id]?.[index];
                     const serverStatuses = material.sheetStatuses || [];
-                    const status = serverStatuses[index] || 'pending';
+                    const serverStatus = serverStatuses[index] || 'pending';
+                    const status = optimisticStatus !== undefined ? optimisticStatus : serverStatus;
+                    const isCutLoading = loadingCutButtons[material.id]?.has(index) || false;
+                    const isSkipLoading = loadingSkipButtons[material.id]?.has(index) || false;
                     
                     return (
                       <div key={`sheet-${material.id}-${index}`} className="flex flex-col space-y-1">
@@ -360,29 +487,35 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
                         <div className="flex space-x-1">
                           <button
                             onClick={() => handleSheetCut(material.id, index)}
-                            disabled={updateSheetMutation.isPending || updateRecutSheetStatusMutation.isPending}
-                            className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors ${
-                              updateSheetMutation.isPending || updateRecutSheetStatusMutation.isPending
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                            disabled={isCutLoading}
+                            className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors flex items-center justify-center gap-1 ${
+                              isCutLoading 
+                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-75'
                                 : status === 'cut' 
                                   ? 'bg-green-600 text-white' 
                                   : 'bg-green-100 text-green-700 hover:bg-green-200'
                             }`}
                           >
-                            {updateSheetMutation.isPending ? '...' : 'Cut'}
+                            {isCutLoading ? (
+                              <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                            ) : null}
+                            Cut
                           </button>
                           <button
                             onClick={() => handleSheetSkip(material.id, index)}
-                            disabled={updateSheetMutation.isPending || updateRecutSheetStatusMutation.isPending}
-                            className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors ${
-                              updateSheetMutation.isPending || updateRecutSheetStatusMutation.isPending
-                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                            disabled={isSkipLoading}
+                            className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors flex items-center justify-center gap-1 ${
+                              isSkipLoading 
+                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-75'
                                 : status === 'skip' 
                                   ? 'bg-red-600 text-white' 
                                   : 'bg-red-100 text-red-700 hover:bg-red-200'
                             }`}
                           >
-                            {updateSheetMutation.isPending ? '...' : 'Skip'}
+                            {isSkipLoading ? (
+                              <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                            ) : null}
+                            Skip
                           </button>
                         </div>
                       </div>
@@ -396,6 +529,8 @@ export function JobPopup({ jobId, onClose }: JobPopupProps) {
                   onRecutClick={handleRecutCut} 
                   onRecutSkip={handleRecutSkip}
                   disabled={updateRecutSheetStatusMutation.isPending}
+                  loadingRecutCutButtons={loadingRecutCutButtons}
+                  loadingRecutSkipButtons={loadingRecutSkipButtons}
                 />
               </div>
             ))
@@ -416,11 +551,20 @@ interface MaterialSectionProps {
 }
 
 // Simple inline recuts component
-function InlineRecuts({ materialId, onRecutClick, onRecutSkip, disabled }: { 
+function InlineRecuts({ 
+  materialId, 
+  onRecutClick, 
+  onRecutSkip, 
+  disabled,
+  loadingRecutCutButtons,
+  loadingRecutSkipButtons
+}: { 
   materialId: number; 
   onRecutClick: (recutId: number, sheetIndex: number, currentStatus: string) => void;
   onRecutSkip: (recutId: number, sheetIndex: number, currentStatus: string) => void;
   disabled: boolean;
+  loadingRecutCutButtons: Record<string, Set<number>>;
+  loadingRecutSkipButtons: Record<string, Set<number>>;
 }) {
   const { data: recuts } = useQuery<RecutEntry[]>({
     queryKey: [`/api/materials/${materialId}/recuts`],
@@ -448,6 +592,8 @@ function InlineRecuts({ materialId, onRecutClick, onRecutSkip, disabled }: {
               // Use server status only - no optimistic state for recuts like main modal
               const serverStatuses = recut.sheetStatuses || [];
               const status = serverStatuses[sheetIndex] || 'pending';
+              const isCutLoading = loadingRecutCutButtons[recut.id]?.has(sheetIndex) || false;
+              const isSkipLoading = loadingRecutSkipButtons[recut.id]?.has(sheetIndex) || false;
               
               return (
                 <div key={`recut-sheet-${recut.id}-${sheetIndex}`} className="flex flex-col space-y-1">
@@ -457,24 +603,34 @@ function InlineRecuts({ materialId, onRecutClick, onRecutSkip, disabled }: {
                   <div className="flex space-x-1">
                     <button
                       onClick={() => onRecutClick(recut.id, sheetIndex, status)}
-                      disabled={disabled}
-                      className={`px-2 py-1 rounded text-xs font-medium flex-1 ${
-                        status === 'cut' 
-                          ? 'bg-green-600 text-white' 
-                          : 'bg-green-100 text-green-700 hover:bg-green-200'
+                      disabled={disabled || isCutLoading}
+                      className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors flex items-center justify-center gap-1 ${
+                        isCutLoading 
+                          ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-75'
+                          : status === 'cut' 
+                            ? 'bg-green-600 text-white' 
+                            : 'bg-green-100 text-green-700 hover:bg-green-200'
                       }`}
                     >
+                      {isCutLoading ? (
+                        <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                      ) : null}
                       Cut
                     </button>
                     <button
                       onClick={() => onRecutSkip(recut.id, sheetIndex, status)}
-                      disabled={disabled}
-                      className={`px-2 py-1 rounded text-xs font-medium flex-1 ${
-                        status === 'skip' 
-                          ? 'bg-red-600 text-white' 
-                          : 'bg-red-100 text-red-700 hover:bg-red-200'
+                      disabled={disabled || isSkipLoading}
+                      className={`px-2 py-1 rounded text-xs font-medium flex-1 transition-colors flex items-center justify-center gap-1 ${
+                        isSkipLoading 
+                          ? 'bg-gray-300 text-gray-500 cursor-not-allowed opacity-75'
+                          : status === 'skip' 
+                            ? 'bg-red-600 text-white' 
+                            : 'bg-red-100 text-red-700 hover:bg-red-200'
                       }`}
                     >
+                      {isSkipLoading ? (
+                        <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"></div>
+                      ) : null}
                       Skip
                     </button>
                   </div>
