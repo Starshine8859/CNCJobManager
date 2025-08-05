@@ -9,7 +9,7 @@ import path from "path";
 import fs from "fs";
 
 import { storage } from "./storage";
-import { createJobSchema, loginSchema, insertUserSchema, insertColorSchema, insertColorGroupSchema } from "@shared/schema";
+import { createJobSchema, loginSchema, insertUserSchema, insertColorSchema, insertColorGroupSchema, insertSupplySchema, insertLocationSchema, insertVendorSchema, insertPurchaseOrderSchema, insertPurchaseOrderItemSchema } from "@shared/schema";
 import { pool } from "./db";
 import "./types";
 
@@ -375,10 +375,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const materialId = parseInt(req.params.materialId);
       const sheetIndex = parseInt(req.params.sheetIndex);
       const { status } = req.body;
+      const userId = req.session.user?.id;
       
-      console.log('Updating sheet status:', { materialId, sheetIndex, status });
+      console.log('Updating sheet status:', { materialId, sheetIndex, status, userId });
       
-      await storage.updateSheetStatus(materialId, sheetIndex, status);
+      await storage.updateSheetStatus(materialId, sheetIndex, status, userId);
       
       broadcastToClients({ type: 'sheet_status_updated', data: { materialId, sheetIndex, status } });
       
@@ -393,8 +394,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const id = parseInt(req.params.id);
       const { sheetIndex, status } = req.body;
+      const userId = req.session.user?.id;
       
-      await storage.updateSheetStatus(id, sheetIndex, status);
+      await storage.updateSheetStatus(id, sheetIndex, status, userId);
       
       broadcastToClients({ type: 'sheet_status_updated', data: { id, sheetIndex, status } });
       
@@ -512,8 +514,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const recutId = parseInt(req.params.id);
       const { sheetIndex, status } = req.body;
+      const userId = req.session.user?.id;
       
-      await storage.updateRecutSheetStatus(recutId, sheetIndex, status);
+      await storage.updateRecutSheetStatus(recutId, sheetIndex, status, userId);
       
       broadcastToClients({ type: 'recut_sheet_status_updated', data: { recutId, sheetIndex, status } });
       
@@ -559,60 +562,86 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Color routes
+  // Colors API (redirected to supplies for backward compatibility)
   app.get("/api/colors", requireAuth, async (req, res) => {
     try {
-      const { search } = req.query;
-      let colors;
-      
-      if (search) {
-        colors = await storage.searchColors(search as string);
-      } else {
-        colors = await storage.getAllColors();
-      }
-      
+      const supplies = await storage.getAllSupplies();
+      // Transform supplies to match the old colors format for backward compatibility
+      const colors = supplies.map(supply => ({
+        id: supply.id,
+        name: supply.name,
+        hexColor: supply.hexColor,
+        groupId: supply.locationId,
+        texture: supply.texture,
+        createdAt: supply.createdAt,
+        updatedAt: supply.updatedAt,
+        group: supply.location ? { id: supply.location.id, name: supply.location.name } : null
+      }));
       res.json(colors);
     } catch (error) {
+      console.error("Error fetching colors:", error);
       res.status(500).json({ message: "Failed to fetch colors" });
     }
   });
 
   app.post("/api/colors", requireAuth, async (req, res) => {
     try {
-      const colorData = insertColorSchema.parse(req.body);
-      const color = await storage.createColor(colorData);
+      const colorData = req.body;
+      // Transform color data to supply format
+      const supplyData = {
+        name: colorData.name,
+        hexColor: colorData.hexColor,
+        pieceSize: 'sheet',
+        quantityOnHand: 0,
+        locationId: colorData.groupId,
+        texture: colorData.texture,
+        defaultVendor: '',
+        defaultVendorPrice: undefined
+      };
+      const supply = await storage.createSupply(supplyData);
+      // Transform back to color format
+      const color = {
+        id: supply.id,
+        name: supply.name,
+        hexColor: supply.hexColor,
+        groupId: supply.locationId,
+        texture: supply.texture,
+        createdAt: supply.createdAt,
+        updatedAt: supply.updatedAt
+      };
       res.json(color);
     } catch (error) {
-      res.status(400).json({ message: "Invalid color data" });
+      console.error("Error creating color:", error);
+      res.status(500).json({ message: "Failed to create color" });
     }
   });
 
   app.put("/api/colors/:id", requireAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const colorData = insertColorSchema.partial().parse(req.body);
-      await storage.updateColor(id, colorData);
+      const colorData = req.body;
+      // Transform color data to supply format
+      const supplyData = {
+        name: colorData.name,
+        hexColor: colorData.hexColor,
+        locationId: colorData.groupId,
+        texture: colorData.texture
+      };
+      await storage.updateSupply(id, supplyData);
       res.json({ message: "Color updated successfully" });
     } catch (error) {
-      res.status(400).json({ message: "Invalid color data" });
+      console.error("Error updating color:", error);
+      res.status(500).json({ message: "Failed to update color" });
     }
   });
 
   app.delete("/api/colors/:id", requireAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      console.log('Delete color request for ID:', id, 'by user:', req.session.user?.username);
-      await storage.deleteColor(id);
-      console.log('Color deleted successfully');
+      await storage.deleteSupply(id);
       res.json({ message: "Color deleted successfully" });
-    } catch (error: any) {
-      console.error('Delete color error:', error);
-      // Check if it's a foreign key constraint error
-      if (error.message?.includes('foreign key') || error.message?.includes('violates foreign key constraint')) {
-        return res.status(400).json({ 
-          message: "Cannot delete color because it is being used in one or more jobs. Please remove the color from all jobs first." 
-        });
-      }
+    } catch (error) {
+      console.error("Error deleting color:", error);
       res.status(500).json({ message: "Failed to delete color" });
     }
   });
@@ -655,6 +684,190 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ message: "Color group deleted successfully" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete color group" });
+    }
+  });
+
+  // Supply routes (new)
+  app.get("/api/supplies", requireAuth, async (req, res) => {
+    try {
+      const { search } = req.query;
+      let supplies;
+      
+      if (search) {
+        supplies = await storage.searchSupplies(search as string);
+      } else {
+        supplies = await storage.getAllSupplies();
+      }
+      
+      res.json(supplies);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch supplies" });
+    }
+  });
+
+  app.post("/api/supplies", requireAuth, async (req, res) => {
+    try {
+      console.log('Creating supply with data:', req.body);
+      const supplyData = insertSupplySchema.parse(req.body);
+      const supply = await storage.createSupply(supplyData);
+      res.json(supply);
+    } catch (error) {
+      console.error('Create supply error:', error);
+      res.status(400).json({ message: "Invalid supply data", error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.put("/api/supplies/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      console.log('Updating supply', id, 'with data:', req.body);
+      const supplyData = insertSupplySchema.partial().parse(req.body);
+      await storage.updateSupply(id, supplyData);
+      res.json({ message: "Supply updated successfully" });
+    } catch (error) {
+      console.error('Update supply error:', error);
+      res.status(400).json({ message: "Invalid supply data", error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.delete("/api/supplies/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteSupply(id);
+      res.json({ message: "Supply deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete supply" });
+    }
+  });
+
+  app.post("/api/supplies/:id/quantity", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { quantity, type, description, jobId } = req.body;
+      const userId = req.session.user?.id;
+      
+      await storage.updateSupplyQuantity(id, quantity, type, description, jobId, userId);
+      res.json({ message: "Supply quantity updated successfully" });
+    } catch (error) {
+      res.status(400).json({ message: "Invalid quantity update data" });
+    }
+  });
+
+  app.post("/api/supplies/:id/allocate", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { quantity, jobId } = req.body;
+      const userId = req.session.user?.id;
+      
+      await storage.allocateSupplyForJob(id, quantity, jobId, userId);
+      res.json({ message: "Supply allocated successfully" });
+    } catch (error) {
+      res.status(400).json({ message: "Invalid allocation data" });
+    }
+  });
+
+  // Location routes (new)
+  app.get("/api/locations", requireAuth, async (req, res) => {
+    try {
+      const locations = await storage.getAllLocations();
+      res.json(locations);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch locations" });
+    }
+  });
+
+  app.post("/api/locations", requireAuth, async (req, res) => {
+    try {
+      const locationData = insertLocationSchema.parse(req.body);
+      const location = await storage.createLocation(locationData);
+      res.json(location);
+    } catch (error) {
+      res.status(400).json({ message: "Invalid location data" });
+    }
+  });
+
+  app.put("/api/locations/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name } = req.body;
+      await storage.updateLocation(id, name);
+      res.json({ message: "Location updated successfully" });
+    } catch (error) {
+      res.status(400).json({ message: "Invalid location data" });
+    }
+  });
+
+  app.delete("/api/locations/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteLocation(id);
+      res.json({ message: "Location deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete location" });
+    }
+  });
+
+  // Vendor routes
+  app.get("/api/vendors", requireAuth, async (req, res) => {
+    try {
+      const vendors = await storage.getAllVendors();
+      res.json(vendors);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch vendors" });
+    }
+  });
+
+  app.post("/api/vendors", requireAuth, async (req, res) => {
+    try {
+      const vendorData = insertVendorSchema.parse(req.body);
+      const vendor = await storage.createVendor(vendorData);
+      res.json(vendor);
+    } catch (error) {
+      res.status(400).json({ message: "Invalid vendor data" });
+    }
+  });
+
+  // Purchase order routes
+  app.get("/api/purchase-orders", requireAuth, async (req, res) => {
+    try {
+      const { fromDate, toDate } = req.query;
+      const purchaseOrders = await storage.getAllPurchaseOrders(
+        fromDate as string | undefined,
+        toDate as string | undefined
+      );
+      res.json(purchaseOrders);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch purchase orders" });
+    }
+  });
+
+  app.post("/api/purchase-orders", requireAuth, async (req, res) => {
+    try {
+      const { orderData, items } = req.body;
+      
+      // Validate order data
+      const validatedOrderData = insertPurchaseOrderSchema.parse(orderData);
+      const validatedItems = items.map((item: any) => insertPurchaseOrderItemSchema.parse(item));
+      
+      // Add created by user
+      validatedOrderData.createdBy = req.session.user!.id;
+      
+      const purchaseOrder = await storage.createPurchaseOrder(validatedOrderData, validatedItems);
+      res.json(purchaseOrder);
+    } catch (error) {
+      console.error('Create purchase order error:', error);
+      res.status(400).json({ message: "Invalid purchase order data" });
+    }
+  });
+
+  app.put("/api/purchase-orders/:id/receive", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { dateReceived } = req.body;
+      await storage.updatePurchaseOrderReceived(id, new Date(dateReceived));
+      res.json({ message: "Purchase order marked as received" });
+    } catch (error) {
+      res.status(400).json({ message: "Invalid data" });
     }
   });
 

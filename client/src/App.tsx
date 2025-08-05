@@ -11,6 +11,7 @@ import PopupPage from "@/pages/popup";
 import NotFound from "@/pages/not-found";
 import Supplies from "@/pages/supplies";
 import PurchaseOrders from "@/pages/purchase-orders";
+import CreatePurchaseOrder from "@/pages/create-purchase-order";
 import CheckoutOrder from "@/pages/checkout-order";
 import SupplyLocations from "@/pages/supply-locations";
 import { useAuth } from "@/lib/auth";
@@ -46,6 +47,7 @@ function Router() {
       <Route path="/popup/:jobId" component={PopupPage} />
       <Route path="/supplies" component={Supplies} />
       <Route path="/purchase-orders" component={PurchaseOrders} />
+      <Route path="/create-purchase-order" component={CreatePurchaseOrder} />
       <Route path="/checkout-order" component={CheckoutOrder} />
       <Route path="/supply-locations" component={SupplyLocations} />
       <Route component={NotFound} />

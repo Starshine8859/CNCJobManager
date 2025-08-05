@@ -1,13 +1,17 @@
 import { 
-  users, jobs, cutlists, jobMaterials, colors, colorGroups, jobTimeLogs, recutEntries,
+  users, jobs, cutlists, jobMaterials, colors, colorGroups, jobTimeLogs, recutEntries, sheetCutLogs,
+  locations, supplies, supplyTransactions, vendors, purchaseOrders, purchaseOrderItems,
   type User, type InsertUser, type Job, type JobWithMaterials, 
   type Color, type ColorGroup, type InsertColor, type InsertColorGroup,
   type JobMaterial, type InsertJobMaterial, type CreateJob,
   type ColorWithGroup, type JobTimeLog, type Cutlist, type InsertCutlist,
-  type CutlistWithMaterials, type JobWithCutlists, type RecutEntry
+  type CutlistWithMaterials, type JobWithCutlists, type RecutEntry,
+  type Location, type InsertLocation, type Supply, type InsertSupply,
+  type SupplyWithLocation, type SupplyTransaction, type InsertSupplyTransaction,
+  type Vendor, type InsertVendor, type PurchaseOrderWithItems, type InsertPurchaseOrder, type InsertPurchaseOrderItem
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, or, ilike, sql, inArray } from "drizzle-orm";
+import { eq, desc, and, or, ilike, sql, inArray, gte, lte } from "drizzle-orm";
 
 export interface IStorage {
   // User management
@@ -33,7 +37,7 @@ export interface IStorage {
   completeJob(id: number): Promise<void>;
   deleteJob(id: number): Promise<void>;
   updateMaterialProgress(materialId: number, completedSheets: number): Promise<void>;
-  updateSheetStatus(materialId: number, sheetIndex: number, status: string): Promise<void>;
+  updateSheetStatus(materialId: number, sheetIndex: number, status: string, userId?: number): Promise<void>;
   deleteSheet(materialId: number, sheetIndex: number): Promise<void>;
   addSheetsToMaterial(materialId: number, additionalSheets: number, isRecut?: boolean): Promise<void>;
   addMaterialToJob(jobId: number, colorId: number, totalSheets: number): Promise<void>;
@@ -43,7 +47,11 @@ export interface IStorage {
   // Recut management
   addRecutEntry(materialId: number, quantity: number, reason?: string, userId?: number): Promise<void>;
   getRecutEntries(materialId: number): Promise<any[]>;
-  updateRecutSheetStatus(recutId: number, sheetIndex: number, status: string): Promise<void>;
+  updateRecutSheetStatus(recutId: number, sheetIndex: number, status: string, userId?: number): Promise<void>;
+  
+  // Sheet cutting tracking
+  logSheetCut(materialId: number, sheetIndex: number, status: string, isRecut?: boolean, recutId?: number, userId?: number): Promise<void>;
+  getSheetCutLogs(materialId: number, fromDate?: Date, toDate?: Date): Promise<any[]>;
 
   // Cutlist management
   createCutlists(jobId: number, count: number): Promise<Cutlist[]>;
@@ -62,6 +70,28 @@ export interface IStorage {
   createColorGroup(group: InsertColorGroup): Promise<ColorGroup>;
   updateColorGroup(id: number, name: string): Promise<void>;
   deleteColorGroup(id: number): Promise<void>;
+
+  // Supply management (new)
+  getAllSupplies(): Promise<SupplyWithLocation[]>;
+  createSupply(supply: InsertSupply): Promise<Supply>;
+  updateSupply(id: number, supply: Partial<InsertSupply>): Promise<void>;
+  deleteSupply(id: number): Promise<void>;
+  searchSupplies(query: string): Promise<SupplyWithLocation[]>;
+  updateSupplyQuantity(id: number, quantity: number, type: 'receive' | 'use' | 'adjust', description?: string, jobId?: number, userId?: number): Promise<void>;
+  allocateSupplyForJob(supplyId: number, quantity: number, jobId: number, userId?: number): Promise<void>;
+
+  // Location management (new)
+  getAllLocations(): Promise<Location[]>;
+  createLocation(location: InsertLocation): Promise<Location>;
+  updateLocation(id: number, name: string): Promise<void>;
+  deleteLocation(id: number): Promise<void>;
+
+  // Purchase order management
+  getAllPurchaseOrders(fromDate?: string, toDate?: string): Promise<PurchaseOrderWithItems[]>;
+  createPurchaseOrder(orderData: InsertPurchaseOrder, items: InsertPurchaseOrderItem[]): Promise<PurchaseOrderWithItems>;
+  updatePurchaseOrderReceived(id: number, dateReceived: Date): Promise<void>;
+  getAllVendors(): Promise<Vendor[]>;
+  createVendor(vendor: InsertVendor): Promise<Vendor>;
 
   // Dashboard stats
   getDashboardStats(sheetsFrom?: string, sheetsTo?: string, timeFrom?: string, timeTo?: string): Promise<{
@@ -612,7 +642,7 @@ export class DatabaseStorage implements IStorage {
     await db.delete(recutEntries).where(eq(recutEntries.id, recutId));
   }
 
-  async updateSheetStatus(materialId: number, sheetIndex: number, status: string): Promise<void> {
+  async updateSheetStatus(materialId: number, sheetIndex: number, status: string, userId?: number): Promise<void> {
     // Use a transaction to prevent race conditions
     return await db.transaction(async (tx) => {
       // First, get the current material data with a lock
@@ -645,6 +675,15 @@ export class DatabaseStorage implements IStorage {
         sheetStatuses,
         completedSheets
       }).where(eq(jobMaterials.id, materialId));
+
+      // Log the sheet cutting activity
+      await tx.insert(sheetCutLogs).values({
+        materialId,
+        sheetIndex,
+        status,
+        isRecut: false,
+        userId
+      });
 
       // Get the job and update its automatic status
       const cutlistData = await tx.select({
@@ -726,7 +765,7 @@ export class DatabaseStorage implements IStorage {
     return entries;
   }
 
-  async updateRecutSheetStatus(recutId: number, sheetIndex: number, status: string): Promise<void> {
+  async updateRecutSheetStatus(recutId: number, sheetIndex: number, status: string, userId?: number): Promise<void> {
     // Get current recut entry
     const [recutEntry] = await db.select().from(recutEntries).where(eq(recutEntries.id, recutId));
     if (!recutEntry) return;
@@ -751,6 +790,16 @@ export class DatabaseStorage implements IStorage {
       completedSheets
     }).where(eq(recutEntries.id, recutId));
 
+    // Log the recut sheet cutting activity
+    await db.insert(sheetCutLogs).values({
+      materialId: recutEntry.materialId,
+      sheetIndex,
+      status,
+      isRecut: true,
+      recutId,
+      userId
+    });
+
     // Get the job and update its automatic status
     const jobData = await db.select({
       jobId: cutlists.jobId
@@ -770,6 +819,32 @@ export class DatabaseStorage implements IStorage {
         }).where(eq(jobs.id, jobId));
       }
     }
+  }
+
+  async logSheetCut(materialId: number, sheetIndex: number, status: string, isRecut: boolean = false, recutId?: number, userId?: number): Promise<void> {
+    await db.insert(sheetCutLogs).values({
+      materialId,
+      sheetIndex,
+      status,
+      isRecut,
+      recutId,
+      userId
+    });
+  }
+
+  async getSheetCutLogs(materialId: number, fromDate?: Date, toDate?: Date): Promise<any[]> {
+    const conditions = [eq(sheetCutLogs.materialId, materialId)];
+    
+    if (fromDate) {
+      conditions.push(gte(sheetCutLogs.cutAt, fromDate));
+    }
+    if (toDate) {
+      conditions.push(lte(sheetCutLogs.cutAt, toDate));
+    }
+    
+    return await db.select().from(sheetCutLogs)
+      .where(and(...conditions))
+      .orderBy(sheetCutLogs.cutAt);
   }
 
   async deleteJob(jobId: number): Promise<void> {
@@ -871,7 +946,7 @@ export class DatabaseStorage implements IStorage {
       else if (status === 'done') jobsByStatus.done = Number(count);
     });
 
-    // Count sheets cut (with date filtering if provided)
+    // Count sheets cut using the new sheet cut logs (with date filtering if provided)
     let sheetsCutResult;
     let recutSheetsCutResult;
 
@@ -879,40 +954,64 @@ export class DatabaseStorage implements IStorage {
       const sheetsFromDate = sheetsFrom ? new Date(sheetsFrom) : new Date(0);
       const sheetsToDate = sheetsTo ? new Date(sheetsTo) : new Date(Date.now());
       
+      // Add debug logging
+      console.log('Sheets filtering:', {
+        sheetsFrom: sheetsFromDate.toISOString(),
+        sheetsTo: sheetsToDate.toISOString(),
+        sheetsFromStr: sheetsFrom,
+        sheetsToStr: sheetsTo
+      });
+      
+      // Count regular sheets cut in the date range
       sheetsCutResult = await db.select({
-        totalSheets: sql<number>`sum(${jobMaterials.completedSheets})`
+        totalSheets: sql<number>`count(*)`
       })
-      .from(jobMaterials)
-      .innerJoin(cutlists, eq(jobMaterials.cutlistId, cutlists.id))
-      .innerJoin(jobs, eq(cutlists.jobId, jobs.id))
+      .from(sheetCutLogs)
       .where(
         and(
-          sql`${jobs.createdAt} >= ${sheetsFromDate}`,
-          sql`${jobs.createdAt} <= ${sheetsToDate}`
+          eq(sheetCutLogs.isRecut, false),
+          eq(sheetCutLogs.status, 'cut'),
+          gte(sheetCutLogs.cutAt, sheetsFromDate),
+          lte(sheetCutLogs.cutAt, sheetsToDate)
         )
       );
 
+      // Count recut sheets cut in the date range
       recutSheetsCutResult = await db.select({
-        totalRecutSheets: sql<number>`sum(${recutEntries.completedSheets})`
+        totalRecutSheets: sql<number>`count(*)`
       })
-      .from(recutEntries)
-      .innerJoin(jobMaterials, eq(recutEntries.materialId, jobMaterials.id))
-      .innerJoin(cutlists, eq(jobMaterials.cutlistId, cutlists.id))
-      .innerJoin(jobs, eq(cutlists.jobId, jobs.id))
+      .from(sheetCutLogs)
       .where(
         and(
-          sql`${recutEntries.createdAt} >= ${sheetsFromDate}`,
-          sql`${recutEntries.createdAt} <= ${sheetsToDate}`
+          eq(sheetCutLogs.isRecut, true),
+          eq(sheetCutLogs.status, 'cut'),
+          gte(sheetCutLogs.cutAt, sheetsFromDate),
+          lte(sheetCutLogs.cutAt, sheetsToDate)
         )
       );
     } else {
+      // Count all sheets cut (no date filtering)
       sheetsCutResult = await db.select({
-        totalSheets: sql<number>`sum(${jobMaterials.completedSheets})`
-      }).from(jobMaterials);
+        totalSheets: sql<number>`count(*)`
+      })
+      .from(sheetCutLogs)
+      .where(
+        and(
+          eq(sheetCutLogs.isRecut, false),
+          eq(sheetCutLogs.status, 'cut')
+        )
+      );
 
       recutSheetsCutResult = await db.select({
-        totalRecutSheets: sql<number>`sum(${recutEntries.completedSheets})`
-      }).from(recutEntries);
+        totalRecutSheets: sql<number>`count(*)`
+      })
+      .from(sheetCutLogs)
+      .where(
+        and(
+          eq(sheetCutLogs.isRecut, true),
+          eq(sheetCutLogs.status, 'cut')
+        )
+      );
     }
 
     // Calculate average job time (with date filtering if provided)
@@ -923,6 +1022,14 @@ export class DatabaseStorage implements IStorage {
     if (timeFrom || timeTo) {
       const timeFromDate = timeFrom ? new Date(timeFrom) : new Date(0);
       const timeToDate = timeTo ? new Date(timeTo) : new Date(Date.now());
+      
+      // Add debug logging
+      console.log('Time filtering:', {
+        timeFrom: timeFromDate.toISOString(),
+        timeTo: timeToDate.toISOString(),
+        timeFromStr: timeFrom,
+        timeToStr: timeTo
+      });
       
       avgTimeResult = await db.select({
         avgDuration: sql<number>`avg(${jobs.totalDuration})`
@@ -1024,9 +1131,230 @@ export class DatabaseStorage implements IStorage {
       sheetsCutToday: totalSheetsCut,
       avgJobTime: avgTimeResult[0]?.avgDuration || 0,
       avgSheetTime: avgSheetTime || 0,
-      materialColors: colorCountResult[0]?.count || 0,
+      materialColors: (await db.select({ count: sql<number>`count(*)` }).from(supplies))[0]?.count || 0,
       jobsByStatus
     };
+  }
+
+  // Supply management methods
+  async getAllSupplies(): Promise<SupplyWithLocation[]> {
+    return await db.query.supplies.findMany({
+      with: {
+        location: true
+      },
+      orderBy: supplies.name
+    });
+  }
+
+  async createSupply(supply: InsertSupply): Promise<Supply> {
+    const result = await db.insert(supplies).values(supply).returning();
+    return result[0];
+  }
+
+  async updateSupply(id: number, supply: Partial<InsertSupply>): Promise<void> {
+    await db.update(supplies).set(supply).where(eq(supplies.id, id));
+  }
+
+  async deleteSupply(id: number): Promise<void> {
+    await db.delete(supplies).where(eq(supplies.id, id));
+  }
+
+  async searchSupplies(query: string): Promise<SupplyWithLocation[]> {
+    return await db.query.supplies.findMany({
+      where: (s, { ilike }) => ilike(s.name, `%${query}%`),
+      with: {
+        location: true
+      },
+      orderBy: supplies.name
+    });
+  }
+
+  async updateSupplyQuantity(id: number, quantity: number, type: 'receive' | 'use' | 'adjust', description?: string, jobId?: number, userId?: number): Promise<void> {
+    const supply = await db.select().from(supplies).where(eq(supplies.id, id));
+    if (!supply[0]) throw new Error('Supply not found');
+
+    const currentSupply = supply[0];
+    let newQuantityOnHand = currentSupply.quantityOnHand;
+    let newAvailable = currentSupply.available;
+
+    // Update quantities based on transaction type
+    switch (type) {
+      case 'receive':
+        newQuantityOnHand += quantity;
+        newAvailable += quantity;
+        break;
+      case 'use':
+        newQuantityOnHand -= quantity;
+        newAvailable -= quantity;
+        break;
+      case 'adjust':
+        newQuantityOnHand = quantity;
+        newAvailable = quantity - currentSupply.allocated;
+        break;
+    }
+
+    // Ensure available doesn't go negative
+    newAvailable = Math.max(0, newAvailable);
+
+    // Update supply quantities
+    await db.update(supplies).set({
+      quantityOnHand: newQuantityOnHand,
+      available: newAvailable
+    }).where(eq(supplies.id, id));
+
+    // Create transaction record
+    await db.insert(supplyTransactions).values({
+      supplyId: id,
+      type,
+      quantity,
+      description,
+      jobId,
+      userId
+    });
+  }
+
+  async allocateSupplyForJob(supplyId: number, quantity: number, jobId: number, userId?: number): Promise<void> {
+    const supply = await db.select().from(supplies).where(eq(supplies.id, supplyId));
+    if (!supply[0]) throw new Error('Supply not found');
+
+    const currentSupply = supply[0];
+    const newAllocated = currentSupply.allocated + quantity;
+    const newAvailable = Math.max(0, currentSupply.available - quantity);
+
+    // Update supply allocation
+    await db.update(supplies).set({
+      allocated: newAllocated,
+      available: newAvailable
+    }).where(eq(supplies.id, supplyId));
+
+    // Create allocation transaction
+    await db.insert(supplyTransactions).values({
+      supplyId,
+      type: 'allocate',
+      quantity,
+      description: `Allocated for job ${jobId}`,
+      jobId,
+      userId
+    });
+  }
+
+  // Location management methods
+  async getAllLocations(): Promise<Location[]> {
+    return await db.select().from(locations).orderBy(locations.name);
+  }
+
+  async createLocation(location: InsertLocation): Promise<Location> {
+    const result = await db.insert(locations).values(location).returning();
+    return result[0];
+  }
+
+  async updateLocation(id: number, name: string): Promise<void> {
+    await db.update(locations).set({ name }).where(eq(locations.id, id));
+  }
+
+  async deleteLocation(id: number): Promise<void> {
+    await db.delete(locations).where(eq(locations.id, id));
+  }
+
+  // Purchase order management methods
+  async getAllPurchaseOrders(fromDate?: string, toDate?: string): Promise<PurchaseOrderWithItems[]> {
+    let conditions = [];
+    
+    if (fromDate || toDate) {
+      const fromDateObj = fromDate ? new Date(fromDate) : new Date(0);
+      const toDateObj = toDate ? new Date(toDate) : new Date(Date.now());
+      
+      conditions.push(
+        gte(purchaseOrders.dateOrdered, fromDateObj),
+        lte(purchaseOrders.dateOrdered, toDateObj)
+      );
+    }
+
+    return await db.query.purchaseOrders.findMany({
+      where: conditions.length > 0 ? and(...conditions) : undefined,
+      with: {
+        items: {
+          with: {
+            supply: true,
+            vendor: true
+          }
+        },
+        createdByUser: true
+      },
+      orderBy: [desc(purchaseOrders.dateOrdered)]
+    });
+  }
+
+  async createPurchaseOrder(orderData: InsertPurchaseOrder, items: InsertPurchaseOrderItem[]): Promise<PurchaseOrderWithItems> {
+    // Generate PO number (format: PO-YYYYMMDD-XXX)
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const existingPOs = await db.select().from(purchaseOrders)
+      .where(sql`${purchaseOrders.poNumber} LIKE ${`PO-${dateStr}-%`}`);
+    
+    const poNumber = `PO-${dateStr}-${String(existingPOs.length + 1).padStart(3, '0')}`;
+    
+    // Calculate total amount
+    const totalAmount = items.reduce((sum, item) => sum + (item.quantity * item.pricePerUnit), 0);
+
+    // Create purchase order
+    const [purchaseOrder] = await db.insert(purchaseOrders).values({
+      ...orderData,
+      poNumber,
+      totalAmount
+    }).returning();
+
+    // Create purchase order items
+    const purchaseOrderItemsResult = await Promise.all(
+      items.map(item => 
+        db.insert(purchaseOrderItems).values({
+          ...item,
+          purchaseOrderId: purchaseOrder.id,
+          totalPrice: item.quantity * item.pricePerUnit
+        }).returning()
+      )
+    );
+
+    // Return the complete purchase order with items
+    return await db.query.purchaseOrders.findFirst({
+      where: eq(purchaseOrders.id, purchaseOrder.id),
+      with: {
+        items: {
+          with: {
+            supply: true,
+            vendor: true
+          }
+        },
+        createdByUser: true
+      }
+    }) as PurchaseOrderWithItems;
+  }
+
+  async updatePurchaseOrderReceived(id: number, dateReceived: Date): Promise<void> {
+    await db.update(purchaseOrders)
+      .set({ 
+        dateReceived, 
+        status: 'received',
+        updatedAt: new Date()
+      })
+      .where(eq(purchaseOrders.id, id));
+  }
+
+  async getAllVendors(): Promise<Vendor[]> {
+    try {
+      console.log('Fetching vendors from database...');
+      const result = await db.select().from(vendors).orderBy(vendors.name);
+      console.log('Vendors fetched successfully:', result.length);
+      return result;
+    } catch (error) {
+      console.error('Error in getAllVendors:', error);
+      throw error;
+    }
+  }
+
+  async createVendor(vendor: InsertVendor): Promise<Vendor> {
+    const result = await db.insert(vendors).values(vendor).returning();
+    return result[0];
   }
 }
 

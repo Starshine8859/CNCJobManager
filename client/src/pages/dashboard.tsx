@@ -31,11 +31,11 @@ export default function Dashboard() {
   
   // Date range states for analytics
   const [sheetsCutDateRange, setSheetsCutDateRange] = useState<DateRange | undefined>({
-    from: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()),
+    from: new Date(Date.UTC(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())),
     to: new Date()
   });
   const [avgTimeDateRange, setAvgTimeDateRange] = useState<DateRange | undefined>({
-    from: new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()),
+    from: new Date(Date.UTC(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())),
     to: new Date()
   });
 
@@ -110,6 +110,11 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Helper function to get start of day in UTC
+  const getStartOfDayUTC = (date: Date) => {
+    return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  };
+
   // Fetch dashboard stats
   const { data: stats } = useQuery<{
     activeJobs: number;
@@ -123,17 +128,23 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (sheetsCutDateRange?.from) {
-        params.set('sheetsFrom', sheetsCutDateRange.from.toISOString());
+        // Ensure we're sending UTC dates
+        const fromDate = getStartOfDayUTC(sheetsCutDateRange.from);
+        params.set('sheetsFrom', fromDate.toISOString());
       }
       if (sheetsCutDateRange?.to) {
         params.set('sheetsTo', sheetsCutDateRange.to.toISOString());
       }
       if (avgTimeDateRange?.from) {
-        params.set('timeFrom', avgTimeDateRange.from.toISOString());
+        // Ensure we're sending UTC dates
+        const fromDate = getStartOfDayUTC(avgTimeDateRange.from);
+        params.set('timeFrom', fromDate.toISOString());
       }
       if (avgTimeDateRange?.to) {
         params.set('timeTo', avgTimeDateRange.to.toISOString());
       }
+      
+      console.log('Dashboard API params:', params.toString());
       
       const res = await apiRequest('GET', `/api/dashboard/stats?${params}`);
       return res.json();

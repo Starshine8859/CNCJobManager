@@ -116,15 +116,7 @@ export default function Layout({ children, currentTime = new Date() }: LayoutPro
                     Dashboard
                   </a>
                 </Link>
-                <Link href="/admin">
-                  <a className={`font-medium pb-2 ${
-                    location === '/admin' 
-                      ? 'text-primary border-b-2 border-primary' 
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}>
-                    Administration
-                  </a>
-                </Link>
+
                 {user?.role === 'super_admin' && (
                   <Link href="/users">
                     <a className={`font-medium pb-2 ${
